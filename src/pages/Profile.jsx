@@ -1,5 +1,5 @@
 import { useState, useContext, useRef, useEffect } from "react";
-import { AuthContext } from "../context/AuthContext";
+import { AuthContext } from "../context/auth-context";
 import { supabase } from "../supabase";
 import { auth } from "../lib/supabaseAuth";
 import { updateProfile, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential, sendEmailVerification } from "../lib/supabaseAuth";

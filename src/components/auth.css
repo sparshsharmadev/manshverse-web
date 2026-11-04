@@ -33,3 +33,75 @@
 @media(max-width:390px){.auth-brandline{gap:10px}.auth-brandline>span{display:none}}
 
 @media(prefers-reduced-motion:reduce){.auth-editorial{animation:none}}
+
+/* Public entry points use the same editorial brutalist system as chat. */
+.auth-page {
+  color: #f0eee3;
+  background: #0c0c0a;
+  background-image: linear-gradient(90deg, transparent calc(50% - .5px), #ffffff07 50%, transparent calc(50% + .5px));
+}
+.auth-page-editorial { padding: clamp(24px, 5vh, 52px) clamp(22px, 5vw, 76px) 34px; }
+.auth-editorial { min-height: min(790px, calc(100vh - 86px)); grid-template-rows: auto auto; align-content: center; align-items: center; column-gap: clamp(48px, 7vw, 112px); }
+.auth-editorial .auth-head { position: relative; }
+.auth-brandline { margin-bottom: clamp(32px, 6vh, 62px); color: #b2b0a5; font: 700 9px ui-monospace, SFMono-Regular, monospace; letter-spacing: .15em; text-transform: uppercase; }
+.auth-brandline i { width: 21px; background: #69695e; }
+.auth-editorial .auth-mark { width: 52px; height: 52px; border: 1px solid #56564a; border-radius: 2px; box-shadow: 4px 4px 0 #24241d; }
+.auth-editorial .auth-mark img { width: 27px; height: 27px; }
+.auth-back-home { min-height: 34px; padding-inline: 10px; border: 1px solid #49493f; border-radius: 0; background: transparent; color: #c0beb2; font: 700 8px ui-monospace, SFMono-Regular, monospace; letter-spacing: .06em; text-transform: uppercase; }
+.auth-back-home:hover { color: #d8f05a; background: #171713; border-color: #d8f05a; transform: none; }
+.auth-editorial .auth-head h1 { max-width: 630px; margin-bottom: 19px; color: #f0eee3; font-family: 'Iowan Old Style', Baskerville, Georgia, serif; font-size: clamp(58px, 7vw, 96px); font-weight: 500; letter-spacing: -.075em; line-height: .88; }
+.auth-editorial .auth-head p { max-width: 360px; color: #aaa99f; font-size: 14px; line-height: 1.75; }
+.auth-editorial .auth-card { padding: clamp(25px, 3vw, 38px); background: #141411; border: 1px solid #45453b; border-radius: 0; box-shadow: 7px 7px 0 #030302; }
+.auth-editorial .auth-field { margin-bottom: 19px; }
+.auth-editorial .auth-field > label { margin-bottom: 8px; color: #d0cec2; font: 700 8px ui-monospace, SFMono-Regular, monospace; letter-spacing: .11em; text-transform: uppercase; }
+.auth-editorial .auth-input { height: 49px; padding-inline: 12px; color: #f1efe5; background: #0e0e0c; border: 1px solid #45453b; border-radius: 0; font-size: 13px; }
+.auth-editorial .auth-input::placeholder { color: #858479; }
+.auth-editorial .auth-input:hover { border-color: #747467; }
+.auth-editorial .auth-input:focus { background: #10100d; border-color: #d8f05a; box-shadow: 3px 3px 0 #d8f05a; }
+.auth-editorial .auth-input.has-error { border-color: #d97566; }
+.auth-editorial .auth-eye { top: 7px; right: 5px; height: 35px; border-radius: 0; color: #d8f05a; font: 700 9px ui-monospace, monospace; text-transform: uppercase; }
+.auth-editorial .auth-eye:hover { background: #24241d; color: #f0eee3; }
+.auth-editorial .auth-between { margin: -5px 0 17px; }
+.auth-between a, .auth-footer a, .auth-legal a, .auth-copy a { color: #d8f05a; }
+.auth-editorial .auth-between a { font-size: 10px; }
+.auth-editorial .auth-submit { height: 49px; border: 1px solid #d8f05a; border-radius: 0; background: #d8f05a; color: #14140f; font: 800 10px ui-monospace, SFMono-Regular, monospace; letter-spacing: .11em; text-transform: uppercase; }
+.auth-editorial .auth-submit:hover:not(:disabled) { background: #e8fa9c; box-shadow: 4px 4px 0 #424237; }
+.auth-editorial .auth-divider { margin: 21px 0 14px; color: #89887d; font: 8px ui-monospace, SFMono-Regular, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.auth-editorial .auth-divider::before, .auth-editorial .auth-divider::after { background: #3e3e35; }
+.auth-editorial .auth-oauth { grid-template-columns: 1fr; gap: 7px; }
+.auth-editorial .auth-oauth-button { height: 43px; justify-content: flex-start; padding-inline: 13px; background: #10100e; border: 1px solid #414137; border-radius: 0; color: #e4e2d7; font: 600 11px Manrope, system-ui, sans-serif; }
+.auth-editorial .auth-oauth-button:hover:not(:disabled) { background: #1b1b16; border-color: #898879; }
+.auth-editorial .auth-footer { margin-top: 17px; color: #9c9b90; font-size: 11px; }
+.auth-editorial .auth-legal { color: #8e8d82; font-size: 9px; }
+.auth-editorial .auth-banner { padding: 10px 12px; border: 1px solid #a55348; border-radius: 0; background: #271512; color: #f2a196; font-size: 11px; }
+.auth-editorial .auth-field-error { color: #f0988e; font-size: 10px; }
+.auth-editorial .auth-hint, .auth-editorial .auth-strength { color: #959489; font-size: 9px; }
+.auth-editorial .auth-strength-bars i { border-radius: 0; }
+.auth-editorial .auth-strength-bars i.filled.s4 { background: #d8f05a; }
+.auth-editorial .auth-success-icon { width: 44px; height: 44px; margin: 0 0 15px; border: 1px solid #59594b; border-radius: 0; background: #202019; color: #d8f05a; }
+.auth-editorial .auth-copy { color: #c2c0b4; font-size: 12px; }
+.auth-editorial .auth-copy strong { color: #f2f0e6; }
+.auth-editorial .auth-success { color: #d8f05a; }
+.auth-editorial .auth-link-button { color: #d8f05a; font-size: 10px; }
+.auth-card button:focus-visible, .auth-card a:focus-visible, .auth-mark:focus-visible { outline-color: #d8f05a; }
+
+@media (max-width: 850px) {
+  .auth-editorial { column-gap: 34px; }
+  .auth-editorial .auth-head h1 { font-size: clamp(54px, 7.2vw, 76px); }
+}
+@media (max-width: 760px) {
+  .auth-page-editorial { padding: 21px 17px 28px; }
+  .auth-editorial { min-height: 0; grid-template-rows: auto auto auto; row-gap: 21px; align-items: start; }
+  .auth-brandline { margin-bottom: 26px; }
+  .auth-editorial .auth-mark { width: 43px; height: 43px; }
+  .auth-editorial .auth-head h1 { max-width: 520px; margin-bottom: 11px; font-size: clamp(52px, 12vw, 76px); }
+  .auth-editorial .auth-head p { font-size: 13px; }
+  .auth-editorial .auth-card { padding: 22px 19px; box-shadow: 4px 4px 0 #030302; }
+  .auth-editorial .auth-footer { margin-top: -9px; }
+}
+@media (max-width: 390px) {
+  .auth-page-editorial { padding-inline: 13px; }
+  .auth-brandline { gap: 8px; }
+  .auth-brandline > span { display: none; }
+  .auth-editorial .auth-head h1 { font-size: 51px; }
+}

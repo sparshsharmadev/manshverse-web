@@ -1,5 +1,7 @@
 import fs from 'fs';
 import path from 'path';
+import process from 'node:process';
+import { Buffer } from 'node:buffer';
 
 // Helper function to pause execution (Polite scraping)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));

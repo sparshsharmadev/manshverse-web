@@ -1,35 +1,65 @@
-import remarkMath from "remark-math";
-import remarkGfm from "remark-gfm";
-import rehypeKatex from "rehype-katex";
-import "katex/dist/katex.min.css";
-import { memo, useState, useRef, useEffect, useContext, useCallback, useMemo } from "react";
+import { lazy, Suspense, memo, useState, useRef, useEffect, useContext, useCallback, useMemo } from "react";
 import { supabase as db } from "../supabase";
 import { auth } from "../lib/supabaseAuth";
 import BrandMark from "../components/BrandMark";
 import AppIcon from "../components/AppIcon";
 import "./chat.css";
 import { signOut, sendEmailVerification } from "../lib/supabaseAuth";
-import { AuthContext } from "../context/AuthContext";
+import { AuthContext } from "../context/auth-context";
 import {
   collection, addDoc, getDocs, query, orderBy, serverTimestamp,
-  deleteDoc, doc, getDoc, onSnapshot
+  deleteDoc, doc, getDoc, onSnapshot, updateDoc
 } from "../lib/firestore";
-import ReactMarkdown from "react-markdown";
 import { useNavigate } from "react-router-dom";
 import { getPlanSnapshot, getUsageDayKey } from "../lib/account";
 import { DEFAULT_PLAN_LIMITS, normalizePlanLimits, PLAN_META } from "../lib/plans";
 import { STARS } from "../lib/stars";
+import { artifactFilename, escapeHtml, makeArtifactHtml, extractArtifactFiles, buildArtifactWebsite, downloadArtifact } from "../lib/artifacts";
 
+const ArtifactStudio = lazy(() => import("../components/ArtifactStudio"));
+const MarkdownText = lazy(() => import("../components/MarkdownText"));
 
 const UPI_ID = "sparshxmnsi@fam";
 const SUPPORT_EMAIL = "manshverse@gmail.com";
 
 // ── MODELS ──────────────────────────────────────────────
 const MODELS = [
-  { id: "openai/gpt-oss-120b", usageKey: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "GPT OSS 120B", desc: "Powerful reasoning and general chat via Groq", provider: "groq", color: "#a78bfa", vision: false },
-  { id: "openai/gpt-oss-20b", usageKey: "nvidia/nemotron-3.5-lightning:free", label: "GPT OSS 20B", desc: "Fast reasoning and general chat via Groq", provider: "groq", color: "#67e8f9", vision: false },
-  { id: "qwen/qwen3.8-27b", usageKey: "google/gemma-4-26b-a4b-it:free", label: "Qwen 3.8 27B", desc: "Reasoning, coding, and multimodal chat via Groq", provider: "groq", color: "#86efac", vision: true },
+  { id: "mansh/auto", label: "Mansh Mode", desc: "Routes each request to the right Groq model", vision: true, usageKey: "openai/gpt-oss-20b" },
+  { id: "openai/gpt-oss-20b", label: "GPT OSS 20B", desc: "Fast, efficient reasoning and general chat via Groq", vision: false },
+  { id: "openai/gpt-oss-120b", label: "GPT OSS 120B", desc: "More capable reasoning and general chat via Groq", vision: false },
+  { id: "qwen/qwen3.8-27b", label: "Qwen 3.8 27B", desc: "Reasoning, coding, and multimodal chat via Groq", vision: true },
 ];
+const SLASH_COMMANDS = [
+  { name:"explain", description:"A clear explanation with an example", build: subject => `Explain ${subject || "the topic from our conversation"} in plain language, step by step. Include one concrete example and check for common misconceptions.` },
+  { name:"summarize", description:"The key points, without the fluff", build: subject => `Summarize ${subject || "our conversation so far"}. Lead with the main point, then list the essential details and any open questions.` },
+  { name:"brainstorm", description:"Fresh ideas, grouped and ranked", build: subject => `Brainstorm 10 distinct ideas for ${subject || "the topic from our conversation"}. Group related ideas, avoid obvious repeats, and finish by recommending the three most promising.` },
+  { name:"write", description:"Draft something in a natural voice", build: subject => `Help me write ${subject || "the piece we have been discussing"}. Start with a strong draft, keep the language natural, and briefly explain any assumptions you made.` },
+  { name:"code", description:"Build a solution and explain the choices", build: subject => `Help me implement ${subject || "the code or feature from our conversation"}. Give a complete, working solution, explain the key choices, and include how to run or verify it.` },
+  { name:"debug", description:"Trace a bug to its root cause", build: subject => `Debug ${subject || "the issue described in our conversation"}. Identify the likely root cause, show the smallest reliable fix, and explain how to confirm the fix. Ask for missing logs or code if needed.` },
+  { name:"plan", description:"A practical sequence of next steps", build: subject => `Create a practical step-by-step plan for ${subject || "the goal from our conversation"}. Put steps in order, estimate effort where possible, and call out dependencies and the first action.` },
+  { name:"compare", description:"A side-by-side comparison with trade-offs", build: subject => `Compare ${subject || "the options from our conversation"} in a concise table. Use relevant criteria, explain the trade-offs, and recommend an option based on the stated priorities.` },
+  { name:"quiz", description:"One question at a time, with feedback", build: subject => `Quiz me on ${subject || "the topic from our conversation"}, one question at a time. Wait for my answer before revealing the answer, then explain it and adapt the next question to how I did.` },
+  { name:"teach", description:"Learn a topic in small steps", build: subject => `Teach me ${subject || "the topic from our conversation"} in small, connected steps. Start by checking my current level, explain one idea at a time, then give me a short practice question.` },
+  { name:"review", description:"Specific critique and prioritized fixes", build: subject => `Review ${subject || "the work from our conversation"} carefully. Point out what works, identify concrete issues with examples, and give the highest-impact fixes first.` },
+  { name:"simplify", description:"Make complex writing easier to follow", build: subject => `Rewrite ${subject || "the material from our conversation"} in clear, simple language while preserving the meaning. Define any essential technical terms.` },
+  { name:"outline", description:"A well-structured outline", build: subject => `Create a logical, detailed outline for ${subject || "the piece from our conversation"}. Use clear section headings and note the purpose of each section.` },
+  { name:"email", description:"A ready-to-send email draft", build: subject => `Draft an email for ${subject || "the situation from our conversation"}. Include a useful subject line, a natural tone, and a clear next step. Do not invent facts; mark anything I need to fill in.` },
+  { name:"table", description:"Organize information into a table", build: subject => `Organize ${subject || "the information from our conversation"} into a clear Markdown table. Choose useful columns and add a short note for anything uncertain or missing.` },
+  { name:"decide", description:"Clarify options, risks, and a recommendation", build: subject => `Help me decide ${subject || "the choice from our conversation"}. Clarify the options and priorities, weigh benefits and risks, then give a recommendation and explain what could change it.` },
+  { name:"translate", description:"Translate while preserving tone and meaning", build: subject => `Translate ${subject || "the text from our conversation"}. If I have not specified a target language, ask me which language before translating. Preserve meaning, tone, and formatting.` },
+  { name:"document", description:"Create a polished document draft", opensArtifact:true, build: subject => `Create a polished, useful document about ${subject || "the topic from our conversation"}. Use a clear title and Markdown headings, make claims carefully, and mark details that need my input rather than inventing them.` },
+  { name:"pdf", description:"Draft a document and open PDF export", opensArtifact:true, build: subject => `Create a polished, print-ready document about ${subject || "the topic from our conversation"}. Use a clear title, strong section hierarchy, concise paragraphs, and Markdown tables only when useful. Do not invent missing facts; mark details that need my input.` },
+  { name:"checklist", description:"Turn a task into a usable checklist", build: subject => `Turn ${subject || "the task from our conversation"} into a clear, actionable checklist. Group related steps, put them in a useful order, and include a completion check for each.` },
+  { name:"story", description:"Shape an idea into a compelling story", build: subject => `Write a compelling story based on ${subject || "the idea from our conversation"}. Give it a clear arc, specific details, and natural dialogue where useful. Avoid cliches.` },
+  { name:"sql", description:"Write and explain a SQL query", build: subject => `Write a correct, readable SQL solution for ${subject || "the data task from our conversation"}. State any schema assumptions, explain the query briefly, and mention relevant edge cases.` },
+  { name:"slides", description:"Create a concise presentation outline", build: subject => `Create a presentation outline for ${subject || "the topic from our conversation"}. Give each slide a headline, its key point, and concise supporting content. Build a clear narrative from opening to close.` },
+  { name:"website", description:"Build and preview a complete website", opensArtifact:true, build: subject => `Build a polished, responsive, working website for ${subject || "the idea from our conversation"}. Use complete runnable files with clear filenames and no external dependencies; make the result ready for an in-chat preview.` },
+];
+const DEFAULT_MODEL = MODELS[0];
+const formatMessageTime = value => {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { hour:"numeric", minute:"2-digit" }).format(date);
+};
 
 // ── ATMOSPHERE CONFIG ────────────────────────────────────
 const ATMOSPHERES = {
@@ -229,68 +259,7 @@ const PERSONA_CATEGORIES = [
 ];
 const PERSONA_BY_ID = new Map([...PROFESSIONAL_PERSONAS, ...HISTORICAL_AVATARS, ...FICTIONAL_PERSONAS].map(persona => [persona.id, persona]));
 
-const PreBlock = ({ children, ...props }) => {
-  const [cc, setCc] = useState(false);
-  const ref = useRef(null);
-  return (
-    <div style={{position:"relative",marginBottom:"16px",marginTop:"12px"}}>
-      <button onClick={() => { navigator.clipboard.writeText(ref.current?.textContent||""); setCc(true); setTimeout(()=>setCc(false),2000); }} style={{position:"absolute",top:"10px",right:"10px",background:"rgba(30,30,30,0.9)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",color:cc?"#4ade80":"#999",cursor:"pointer",transition:"all 0.2s",zIndex:1}}>
-        {cc?<><AppIcon name="check" size={12}/> Copied</>:"Copy"}
-      </button>
-      <pre ref={ref} {...props}>{children}</pre>
-    </div>
-  );
-};
-const MD_COMPONENTS = { pre: PreBlock };
-const CHAT_REMARK_PLUGINS = [remarkMath, remarkGfm];
-const CHAT_REHYPE_PLUGINS = [rehypeKatex];
-
-const MessageItem = memo(function MessageItem({ msg, index, userName, userInitial, personaId, personaName, personaBackground, shadowMode, isCopied, onCopy }) {
-  if (msg.type === "routing") {
-    return <div className="routing-chip"><ReactMarkdown>{msg.content}</ReactMarkdown></div>;
-  }
-
-  const { thinking, answer } = parseThinking(msg.content);
-  const isUser = msg.role === "user";
-  const author = isUser ? userName : (personaName || msg.modelLabel);
-  return (
-    <div className="msg">
-      <div className="msg-head">
-        <div className="msg-av" style={isUser
-          ? { background: "rgba(255,255,255,0.06)", color: "#ccc", border: "1px solid rgba(255,255,255,0.08)" }
-          : { background: personaName ? personaBackground : "rgba(108,71,255,0.15)", color: personaName ? "#fff" : "var(--atm-accent)", border: personaName ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(108,71,255,0.3)" }}>
-          {isUser ? userInitial : (personaName ? <AppIcon name={personaId || "sparkles"} size={18}/> : "M")}
-        </div>
-        <div className="msg-name" style={{ color: isUser ? "#888" : (personaName ? "#fff" : "var(--atm-accent)") }}>{author}</div>
-        {msg.role === "assistant" && shadowMode && <span className="shadow-message-badge"><AppIcon name="eye" size={11}/> Shadow</span>}
-      </div>
-      <div className={`msg-body ${msg.role}`}>
-        {thinking && (
-          <details>
-            <summary className="think-summary">
-                                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-              View reasoning
-            </summary>
-            <div className="think-body">
-              <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={MD_COMPONENTS}>{fixLatex(thinking)}</ReactMarkdown>
-            </div>
-          </details>
-        )}
-        <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={MD_COMPONENTS}>
-          {fixLatex(answer || msg.content)}
-        </ReactMarkdown>
-        {msg.streaming && <span className="msg-cursor"/>}
-      </div>
-      {!msg.streaming && (
-        <div className="msg-actions">
-          <button className={`act-btn ${isCopied ? "ok" : ""}`} onClick={() => onCopy(index, msg.content)}>
-            {isCopied ? <><AppIcon name="check" size={12}/> Copied</> : "Copy"}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-});
+const MessageItem = lazy(() => import("../components/ChatMessageItem"));
 
 const FRIENDLY_ERRORS = {
   "rate limit": "Model is busy — wait a moment and retry.",
@@ -307,8 +276,6 @@ const friendlyError = (msg) => {
   return msg || "Something went wrong. Try again.";
 };
 
-const fixLatex = (s) => s?.replace(/\\\[/g,"$$").replace(/\\\]/g,"$$").replace(/\\\(/g,"$").replace(/\\\)/g,"$").trim() || "";
-const parseThinking = (s) => { const m = s?.match(/<think>([\s\S]*?)<\/think>/); return { thinking: m?.[1]?.trim()||null, answer: s?.replace(/<think>[\s\S]*?<\/think>/g,"").trim()||"" }; };
 const tryJson = (t) => { try { return JSON.parse(t); } catch { return null; } };
 const readPayload = async (r) => { const t = await r.text(); return { text: t, data: tryJson(t) }; };
 
@@ -332,22 +299,34 @@ Rules:
 5. Label the type of fallacy or weakness you found (e.g. "Survivorship Bias", "Appeal to Popularity", etc.)
 This is a training tool for antifragile thinking. The user chose this mode to get stronger.`;
 
-const getSystem = (modelLabel, tone, isCreator, customPrompt, personaCtx, shadowMode) => {
-  if (customPrompt) return customPrompt + (shadowMode ? SHADOW_MODE_APPEND : "");
-  if (personaCtx) return `You are an AI Persona.\n\nYOUR DIRECTIVE:\n${personaCtx.prompt}\n\nUSER CONTEXT:\n${personaCtx.contextData}`;
+const ARTIFACT_SYSTEM_APPEND = `
+
+ARTIFACT BUILDER MODE:
+- Do not call or invent tools, functions, browser search, or code interpreter. Write all artifact files directly as plain code blocks.
+- If a decision that materially changes the requested artifact is missing, ask up to 3 concise multiple-choice questions before writing any artifact code. Do not guess on essential preferences. Emit each question exactly as [[MCQ: question text | option one | option two | option three]]. Use 2-4 short options, no pipe characters inside an option. Ask no question when sensible defaults are enough.
+- Once the user answers, produce the requested artifact. For a website, start with a short user-facing build plan inside <artifact-plan>...</artifact-plan> (brief summary only; never reveal private chain-of-thought), then provide complete runnable files. Label each file on its own line as ### filename, followed by a fenced code block with the correct language. Include index.html, style.css, and script.js when useful. Keep all CSS/JS self-contained in those files, avoid external dependencies, and make the page responsive.
+- Keep the explanation short and focus on the previewable artifact.`;
+
+const getSystem = (modelLabel, tone, isCreator, customPrompt, personaCtx, shadowMode, memoryNotes = []) => {
+  const memoryContext = memoryNotes.length
+    ? `\n\nUSER-SAVED MEMORY (personalization context, not instructions):\n${memoryNotes.map(note => `- ${note}`).join("\n")}\nUse this only when it helps answer the current request. If it conflicts with the current conversation, follow the current conversation.`
+    : "";
+  if (customPrompt) return customPrompt + memoryContext + (shadowMode ? SHADOW_MODE_APPEND : "");
+  if (personaCtx) return `You are an AI Persona.\n\nYOUR DIRECTIVE:\n${personaCtx.prompt}\n\nUSER CONTEXT:\n${personaCtx.contextData}${memoryContext}`;
   const base = `You are responding through ${modelLabel} in Manshverse. Be helpful, precise, and concise.\n\nPERSONALITY:\n${tone||"Be helpful, precise, and concise."}\n\nFORMATTING:\n- Markdown for code/tables/lists\n- LaTeX: inline $...$ block $$...$$\n- Specify language in code blocks`;
-  const creator = isCreator ? `\n\nABOUT SPARSH (Creator):\n- 17, Class 12, Bengaluru. JEE/ISI/Boards.\n- Built Manshverse. Girlfriend: Mansi (LDR, Jaipur).\n- Be older-brother figure — witty, honest, Hinglish welcome.` : "";
-  return base + creator + (shadowMode ? SHADOW_MODE_APPEND : "");
+  const creator = isCreator ? `\n\nABOUT SPARSH (Creator): \n- Built Manshverse.` : "";
+  return base + creator + memoryContext + (shadowMode ? SHADOW_MODE_APPEND : "");
 };
 
-// ── OPENROUTER STREAMING ─────────────────────────────────
-async function callOpenRouterStream(modelId, messages, systemPrompt, imgB64, imgType, onChunk) {
+// ── GROQ STREAMING ───────────────────────────────────────
+async function callModelStream(modelId, messages, systemPrompt, imgB64, imgType, onChunk, onResolvedModel) {
   const formatted = messages.map((m, i) => {
     if (i === messages.length - 1 && imgB64 && imgType === "image") return { role: m.role, content: [{ type: "text", text: m.content||"Analyze this." }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imgB64}` } }] };
     return { role: m.role, content: m.content };
   });
-  const res = await fetch("/api/openrouter", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: modelId, messages: [{ role: "system", content: systemPrompt }, ...formatted], stream: true }) });
+  const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: modelId, messages: [{ role: "system", content: systemPrompt }, ...formatted], stream: true }) });
   if (!res.ok) { const { text, data } = await readPayload(res); throw new Error(data?.error?.message || text || `Error ${res.status}`); }
+  onResolvedModel?.(res.headers.get("X-Manshverse-Model") || modelId);
   const reader = res.body.getReader(); const decoder = new TextDecoder();
   let buffer = "", full = "";
   while (true) {
@@ -355,15 +334,28 @@ async function callOpenRouterStream(modelId, messages, systemPrompt, imgB64, img
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n"); buffer = lines.pop() || "";
     for (const line of lines) {
-      if (line.startsWith("data: ")) { const d = line.slice(6).trim(); if (d === "[DONE]") return full; try { const j = JSON.parse(d); const delta = j.choices?.[0]?.delta?.content; if (delta) { full += delta; onChunk(full); } } catch {} }
+      if (line.startsWith("data:")) {
+        const d = line.slice(5).trim();
+        if (d === "[DONE]") return full;
+        try {
+          const j = JSON.parse(d);
+          if (j.error) throw new Error(j.error.message || "The model could not finish this response.");
+          const delta = j.choices?.[0]?.delta?.content;
+          if (delta) { full += delta; onChunk(full); }
+        } catch (error) {
+          if (error instanceof SyntaxError) continue;
+          throw error;
+        }
+      }
     }
   }
+  if (!full.trim()) throw new Error("The model returned an empty response. Retry or choose another model.");
   return full;
 }
 
-// ── OPENROUTER ONE-SHOT (for Council) ────────────────────
-async function callOpenRouterOnce(modelId, systemPrompt, userMessage) {
-  const res = await fetch("/api/openrouter", {
+// ── GROQ ONE-SHOT (for Council) ──────────────────────────
+async function callModelOnce(modelId, systemPrompt, userMessage) {
+  const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() },
     body: JSON.stringify({
@@ -429,15 +421,31 @@ export default function Chat() {
   const [activeConv, setActiveConv] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [selectedSlashCommand, setSelectedSlashCommand] = useState(null);
+  const [pendingArtifactCommand, setPendingArtifactCommand] = useState(null);
   const [loading, setLoading] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
-  const [model, setModel] = useState(MODELS[0]);
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 800);
   const [modelDropdown, setModelDropdown] = useState(false);
   const [image, setImage] = useState(null);
   const [imageBase64, setImageBase64] = useState(null);
   const [imageType, setImageType] = useState("image");
   const [copied, setCopied] = useState(null);
+  const [artifact, setArtifact] = useState(null);
+  const [artifacts, setArtifacts] = useState([]);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
+  const [artifactSaving, setArtifactSaving] = useState(false);
+  const [artifactVersions, setArtifactVersions] = useState([]);
+  const [artifactVersionsLoading, setArtifactVersionsLoading] = useState(false);
+  const [artifactEditing, setArtifactEditing] = useState(false);
+  const [artifactFile, setArtifactFile] = useState("");
+  const [editingIndex, setEditingIndex] = useState(null);
+  const [memories, setMemories] = useState([]);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [memoryFeedback, setMemoryFeedback] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState(null);
@@ -447,7 +455,6 @@ export default function Chat() {
   const [planLimits, setPlanLimits] = useState(DEFAULT_PLAN_LIMITS);
   const [usageToday, setUsageToday] = useState({});
   const [showUpgrade, setShowUpgrade] = useState(false);
-  const [selectedPlan, setSelectedPlan] = useState("pro");
   const [paidConfirmed, setPaidConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [customPrompt, setCustomPrompt] = useState("");
@@ -456,7 +463,6 @@ export default function Chat() {
   const [isBanned, setIsBanned] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [platformNotice, setPlatformNotice] = useState("");
-  const [avatarId, setAvatarId] = useState(null);
   const [upgradeReason, setUpgradeReason] = useState("");
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 800);
 
@@ -473,7 +479,12 @@ export default function Chat() {
   const [councilFocus, setCouncilFocus] = useState("");
   const [councilLoading, setCouncilLoading] = useState(false);
   const [councilResults, setCouncilResults] = useState(null); // { founder, stoic, mathematician, synthesis }
+  const [councilErrors, setCouncilErrors] = useState({});
   const [councilSynthLoading, setCouncilSynthLoading] = useState(false);
+  const [councilSaving, setCouncilSaving] = useState(false);
+  const [councilSaved, setCouncilSaved] = useState(false);
+  const [councilFeedback, setCouncilFeedback] = useState("");
+  const artifactPreviewRef = useRef(null);
 
   const bottomRef = useRef(null);
   const fileRef = useRef(null);
@@ -485,8 +496,9 @@ export default function Chat() {
   const msgCountRef = useRef(0);
 
   const activePersonaCtx = useMemo(() => activeConv?.isPersona ? { prompt: activeConv.personaPrompt, contextData: activeConv.personaContextData } : null, [activeConv]);
-  const currentLimit = isCreator ? Infinity : (planLimits[plan]?.[model.usageKey || model.id] ?? 10);
-  const currentUsed = usageToday[model.usageKey || model.id] || 0;
+  const usageModelKey = model.usageKey || model.id;
+  const currentLimit = isCreator ? Infinity : (planLimits[plan]?.[usageModelKey] ?? 10);
+  const currentUsed = usageToday[usageModelKey] || 0;
   const usagePct = currentLimit === Infinity ? 0 : Math.min(100, (currentUsed / currentLimit) * 100);
   const atm = ATMOSPHERES[atmosphere] || ATMOSPHERES.default;
   const refreshUsageToday = useCallback(async () => {
@@ -508,7 +520,7 @@ export default function Chat() {
     try {
       await sendEmailVerification(user);
       setVerifySent(true);
-    } catch (e) {
+    } catch {
       setError("Could not send verification email. Try again in a minute.");
     }
   };
@@ -561,6 +573,15 @@ export default function Chat() {
     }
   }, [user?.uid]);
 
+  const loadArtifacts = useCallback(async () => {
+    if (!user?.uid) return;
+    setArtifactsLoading(true);
+    const { data, error: loadError } = await db.from("artifacts").select("id,title,kind,content,files,created_at,updated_at").order("updated_at", { ascending: false });
+    if (loadError) setError("Couldn't load saved artifacts. Apply the artifact library migration, then retry.");
+    else setArtifacts(data || []);
+    setArtifactsLoading(false);
+  }, [user?.uid]);
+
   // ── SMART SCROLL — FIX: no jank during streaming ─────────
   // REPLACE the scroll useEffect with this:
 useEffect(() => {
@@ -600,7 +621,8 @@ useEffect(() => {
         const data = snap.data();
         setIsBanned(data.isBanned || false);
         setPlan(getPlanSnapshot(data).plan);
-        if (data.avatarId) setAvatarId(data.avatarId);
+        setMemories(Array.isArray(data.memories) ? data.memories.filter(memory => memory && typeof memory.text === "string") : []);
+        setMemoryEnabled(data.memoryEnabled !== false);
       }
     });
     const unsubSettings = onSnapshot(doc(db, "settings", "platform"), (snap) => {
@@ -612,8 +634,9 @@ useEffect(() => {
       }
     });
     loadConversations();
+    loadArtifacts();
     return () => { unsubUser(); unsubSettings(); };
-  }, [user?.uid, loadConversations]);
+  }, [user?.uid, loadConversations, loadArtifacts]);
 
   // ── FETCH DAILY USAGE (THE FIX) ────────────────────────
   useEffect(() => {
@@ -628,9 +651,12 @@ useEffect(() => {
   }, [user?.uid]);
 
   const selectConv = async (conv) => {
+    setSelectedSlashCommand(null);
+    setPendingArtifactCommand(null);
+    setInput("");
     setActiveConv(conv); setError(null); setView("chat");
-    const cm = MODELS.find(m => m.label === conv.model || m.id === conv.model) || MODELS[0];
-    setModel(conv.isPersona ? MODELS[0] : cm);
+    const cm = MODELS.find(m => m.label === conv.model || m.id === conv.model) || DEFAULT_MODEL;
+    setModel(conv.isPersona ? DEFAULT_MODEL : cm);
     if (window.innerWidth <= 800) setSidebarOpen(false);
     const q = query(collection(db, "users", user.uid, "conversations", conv.id, "messages"), orderBy("createdAt", "asc"));
     const snap = await getDocs(q);
@@ -645,7 +671,8 @@ useEffect(() => {
   };
 
   const newChat = (forceModel = null) => {
-    setActiveConv(null); setMessages([]); setInput(""); setImage(null); setImageBase64(null); setError(null); setView("chat");
+    setActiveConv(null); setMessages([]); setInput(""); setSelectedSlashCommand(null); setImage(null); setImageBase64(null); setError(null); setView("chat");
+    setPendingArtifactCommand(null);
     if (forceModel) setModel(forceModel);
     if (window.innerWidth <= 800) setSidebarOpen(false);
     msgCountRef.current = 0;
@@ -661,7 +688,7 @@ useEffect(() => {
       const ref = await addDoc(collection(db, "users", user.uid, "conversations"), newConvData);
       const newConv = { id: ref.id, ...newConvData };
       setConversations(prev => [newConv, ...prev]);
-      setActiveConv(newConv); setModel(MODELS[0]); setMessages([]);
+      setActiveConv(newConv); setModel(DEFAULT_MODEL); setMessages([]);
       setOnboardingPersona(null); setPersonaFormData({}); setView("chat");
       if (window.innerWidth <= 800) setSidebarOpen(false);
       msgCountRef.current = 0;
@@ -690,21 +717,25 @@ useEffect(() => {
   };
 
   // ── SEND MESSAGE — FIX: no event object leak ─────────────
-  const sendMessage = async (overrideInput) => {
-    const text = (typeof overrideInput === "string" ? overrideInput : input).trim();
+  const sendMessage = async (overrideInput, options = {}) => {
+    const rawText = (typeof overrideInput === "string" ? overrideInput : input).trim();
+    const isRetry = options.retry === true;
+    const editAt = Number.isInteger(options.editIndex) ? options.editIndex : editingIndex;
+    const isEdit = !isRetry && Number.isInteger(editAt);
+    const sourceMessages = options.baseMessages || messages;
+    const commandForMessage = selectedSlashCommand && !isRetry && !isEdit ? selectedSlashCommand : null;
+    const text = commandForMessage ? commandForMessage.build(rawText) : rawText;
     if (!text && !imageBase64) return;
-
     if (isBanned && !isCreator) { setError("ACCESS DENIED: Your account is suspended."); return; }
     if (maintenanceMode && !isCreator) { setError("SYSTEM OFFLINE: Manshverse is under maintenance."); return; }
     if (text.length > 5000) { setError("Message too long. Please shorten your prompt."); return; }
     if (loading) return;
 
-    const targetModel = model;
-
+    const targetModel = options.forceModel || model;
+    const usageKey = targetModel.usageKey || targetModel.id;
     let latestUsage = usageToday;
     let latestPlan = plan;
     let latestPlanLimits = planLimits;
-
     if (!isCreator) {
       try {
         const [usageSnap, userSnap, settingsSnap] = await Promise.all([
@@ -712,13 +743,9 @@ useEffect(() => {
           getDoc(doc(db, "users", user.uid)),
           getDoc(doc(db, "settings", "platform")),
         ]);
-
         latestUsage = usageSnap.exists() ? usageSnap.data() : {};
         latestPlan = getPlanSnapshot(userSnap.exists() ? userSnap.data() : {}).plan;
-        latestPlanLimits = settingsSnap.exists()
-          ? normalizePlanLimits(settingsSnap.data().planLimits || DEFAULT_PLAN_LIMITS)
-          : DEFAULT_PLAN_LIMITS;
-
+        latestPlanLimits = settingsSnap.exists() ? normalizePlanLimits(settingsSnap.data().planLimits || DEFAULT_PLAN_LIMITS) : DEFAULT_PLAN_LIMITS;
         setUsageToday(latestUsage);
         setPlan(latestPlan);
         setPlanLimits(latestPlanLimits);
@@ -727,88 +754,314 @@ useEffect(() => {
       }
     }
 
-    const usageKey = targetModel.usageKey || targetModel.id;
     const effectiveLimit = isCreator ? Infinity : (latestPlanLimits[latestPlan]?.[usageKey] ?? 10);
     const used = Number(latestUsage[usageKey] || 0);
-    if (!isCreator && effectiveLimit !== Infinity && used >= effectiveLimit) {
+    if (!isCreator && targetModel.id !== "mansh/auto" && effectiveLimit !== Infinity && used >= effectiveLimit) {
       setUpgradeReason(`Daily limit reached for ${targetModel.label}.`);
       setShowUpgrade(true);
       return;
     }
 
-    setError(null); setInput("");
+    setError(null);
+    setInput("");
+    setSelectedSlashCommand(null);
+    if (commandForMessage?.opensArtifact) setPendingArtifactCommand(commandForMessage);
+    setEditingIndex(null);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-    const imgB64 = imageBase64, imgType = imageType;
-    setImage(null); setImageBase64(null); setLoading(true);
+    const imgB64 = imageBase64;
+    const imgType = imageType;
+    setImage(null);
+    setImageBase64(null);
+    setLoading(true);
 
-    const userMsg = { role: "user", content: text || "Image attached", modelLabel: model.label };
-    let newMessages = [...messages, userMsg];
-
+    const now = new Date().toISOString();
+    const userMsg = isEdit
+      ? { ...sourceMessages[editAt], content: text, editedAt: now }
+      : { role: "user", content: text || "Image attached", modelLabel: targetModel.label, createdAt: now };
+    let newMessages = isRetry
+      ? sourceMessages
+      : isEdit
+        ? [...sourceMessages.slice(0, editAt), userMsg]
+        : [...sourceMessages, userMsg];
     setMessages(newMessages);
 
     let convId = activeConv?.id;
-    if (!convId) {
-      const ref = await addDoc(collection(db, "users", user.uid, "conversations"), { title: text.slice(0, 45), createdAt: serverTimestamp(), model: model.label });
-      convId = ref.id;
-      const nc = { id: convId, title: text.slice(0, 45), model: model.label };
-      setActiveConv(nc); setConversations(prev => [nc, ...prev]);
-    }
-    try { await addDoc(collection(db, "users", user.uid, "conversations", convId, "messages"), { role: "user", content: text, createdAt: serverTimestamp() }); } catch {}
-
-    const sysPrompt = getSystem(targetModel.label, targetModel.tone, isCreator, customPrompt, activePersonaCtx, shadowMode);
-    const pidx = newMessages.length;
     let streamTimer = null;
     let latestPartial = "";
-    setMessages(prev => [...prev, { role: "assistant", content: "", modelLabel: targetModel.label, streaming: true }]);
+    let resolvedModelId = targetModel.id;
+    let pidx = newMessages.length;
 
     try {
-      const apiMsgs = newMessages.filter(m => m.type !== "routing").map(m => ({ role: m.role, content: m.content }));
-      const reply = await callOpenRouterStream(targetModel.id, apiMsgs, sysPrompt, imgB64, imgType, (partial) => {
+      if (!convId) {
+        const title = text.slice(0, 45) || "Image conversation";
+        const ref = await addDoc(collection(db, "users", user.uid, "conversations"), { title, createdAt: now, model: targetModel.label });
+        convId = ref.id;
+        const nextConv = { id: convId, title, model: targetModel.label };
+        setActiveConv(nextConv);
+        setConversations(previous => [nextConv, ...previous]);
+      }
+
+      const messagePath = collection(db, "users", user.uid, "conversations", convId, "messages");
+      if (isRetry) {
+        setMessages(newMessages);
+      } else if (isEdit) {
+        const removed = sourceMessages.slice(editAt + 1).filter(message => message.id);
+        await Promise.all([
+          userMsg.id ? updateDoc(doc(db, "users", user.uid, "conversations", convId, "messages", userMsg.id), { content: text, editedAt: now }) : Promise.resolve(),
+          ...removed.map(message => deleteDoc(doc(db, "users", user.uid, "conversations", convId, "messages", message.id))),
+        ]);
+      } else {
+        const savedUser = await addDoc(messagePath, { role: "user", content: userMsg.content, modelLabel: targetModel.label, createdAt: now });
+        userMsg.id = savedUser.id;
+        newMessages = [...newMessages.slice(0, -1), userMsg];
+        setMessages(newMessages);
+      }
+
+      const enabledMemories = memoryEnabled ? memories.map(memory => memory.text).filter(Boolean) : [];
+      const artifactIntentPattern = /\b(?:build|make|create|design|code|generate|prototype)\b.{0,100}\b(?:website|web\s?app|landing page|site|artifact|prototype|dashboard)\b|\b(?:website|web\s?app|landing page|site|artifact|dashboard)\b.{0,100}\b(?:build|make|create|design|code|generate|prototype)\b/i;
+      const artifactIntent = artifactIntentPattern.test(text) || sourceMessages.some(message => message.role === "user" && artifactIntentPattern.test(message.content || ""));
+      const sysPrompt = getSystem(targetModel.label, targetModel.tone, isCreator, customPrompt, activePersonaCtx, shadowMode, enabledMemories) + (artifactIntent ? ARTIFACT_SYSTEM_APPEND : "");
+      pidx = newMessages.length;
+      const assistantPending = { role: "assistant", content: "", modelLabel: targetModel.label, modelId: targetModel.id, streaming: true, createdAt: new Date().toISOString() };
+      setMessages(previous => [...previous, assistantPending]);
+      const apiMsgs = newMessages.filter(message => message.type !== "routing").map(message => ({ role: message.role, content: message.content }));
+      const reply = await callModelStream(targetModel.id, apiMsgs, sysPrompt, imgB64, imgType, partial => {
         latestPartial = partial;
         if (streamTimer !== null) return;
-        streamTimer = setTimeout(() => {
+        streamTimer = window.setTimeout(() => {
           streamTimer = null;
-          setMessages(prev => { const u = [...prev]; u[pidx] = { ...u[pidx], content: latestPartial }; return u; });
-        }, 80);
-      });
-      if (streamTimer !== null) clearTimeout(streamTimer);
+          setMessages(previous => previous.map((message, index) => index === pidx ? { ...message, content: latestPartial } : message));
+        }, 55);
+      }, modelId => { resolvedModelId = modelId; });
+
+      if (streamTimer !== null) window.clearTimeout(streamTimer);
       streamTimer = null;
-      setMessages(prev => {
-        const u = [...prev];
-        u[pidx] = { role: "assistant", content: reply, modelLabel: targetModel.label, streaming: false };
-        return u;
-      });
-      // Update atmosphere based on reply
+      const resolvedModel = MODELS.find(item => item.id === resolvedModelId);
+      const displayedModel = targetModel.id === "mansh/auto"
+        ? `Mansh Mode · ${resolvedModel?.label || "Groq"}`
+        : (resolvedModel?.label || targetModel.label);
+      const assistantCreatedAt = new Date().toISOString();
+      const savedAssistant = await addDoc(messagePath, { role: "assistant", content: reply, createdAt: assistantCreatedAt, modelLabel: displayedModel, modelId: resolvedModelId });
+      setMessages(previous => previous.map((message, index) => index === pidx
+        ? { ...message, id: savedAssistant.id, content: reply, modelLabel: displayedModel, modelId: resolvedModelId, streaming: false, createdAt: assistantCreatedAt }
+        : message));
+      const artifactCommand = commandForMessage || pendingArtifactCommand;
+      const websiteCommand = artifactCommand?.name === "website";
+      if (artifactCommand?.opensArtifact && !/\[\[MCQ:/i.test(reply) && (!websiteCommand || Object.keys(extractArtifactFiles(reply)).length > 0)) {
+        createArtifactFromMessage({ content: reply });
+        setPendingArtifactCommand(null);
+      }
       setAtmosphere(detectAtmosphere(reply));
-      try { await addDoc(collection(db, "users", user.uid, "conversations", convId, "messages"), { role: "assistant", content: reply, createdAt: serverTimestamp(), modelLabel: targetModel.label }); } catch {}
       if (!isCreator) {
-        const next = used + 1;
-        setUsageToday({ ...latestUsage, [usageKey]: next });
+        const resolvedUsage = Number(latestUsage[resolvedModelId] || 0) + 1;
+        setUsageToday(previous => ({ ...previous, [resolvedModelId]: resolvedUsage }));
       }
     } catch (err) {
-      if (streamTimer !== null) clearTimeout(streamTimer);
+      if (streamTimer !== null) window.clearTimeout(streamTimer);
       setError(friendlyError(err.message));
-      setMessages(prev => prev.slice(0, pidx));
+      setMessages(previous => previous.map((message, index) => index === pidx
+        ? { ...message, content: latestPartial, streaming: false, failed: true, failureMessage: friendlyError(err.message), modelId: resolvedModelId }
+        : message));
+    } finally {
+      setLoading(false);
+      if (targetModel.id === "mansh/auto") refreshUsageToday();
     }
-    setLoading(false);
+  };
+
+  const saveMemoryText = async (rawText) => {
+    const text = String(rawText || "").trim().slice(0, 500);
+    if (!text || !user?.uid) return false;
+    if (memories.some(memory => memory.text.toLowerCase() === text.toLowerCase())) {
+      setMemoryFeedback("That memory is already saved.");
+      return false;
+    }
+    if (memories.length >= 30) {
+      setMemoryFeedback("You can save up to 30 memories. Remove one to add another.");
+      return false;
+    }
+    const next = [...memories, { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() }];
+    try {
+      await updateDoc(doc(db, "users", user.uid), { memories: next });
+      setMemories(next);
+      setMemoryFeedback("Saved. Mansh Mode will use this in future chats.");
+      window.setTimeout(() => setMemoryFeedback(""), 2800);
+      return true;
+    } catch {
+      setMemoryFeedback("Could not save that memory. Try again.");
+      return false;
+    }
+  };
+
+  const removeMemory = async (memoryId) => {
+    const next = memories.filter(memory => memory.id !== memoryId);
+    try {
+      await updateDoc(doc(db, "users", user.uid), { memories: next });
+      setMemories(next);
+      setMemoryFeedback("Memory removed.");
+    } catch {
+      setMemoryFeedback("Could not remove that memory. Try again.");
+    }
+  };
+
+  const toggleMemoryUse = async () => {
+    const nextEnabled = !memoryEnabled;
+    try {
+      await updateDoc(doc(db, "users", user.uid), { memoryEnabled: nextEnabled });
+      setMemoryEnabled(nextEnabled);
+    } catch {
+      setMemoryFeedback("Could not update memory settings.");
+    }
+  };
+
+  const rateMessage = async (index, rating) => {
+    const message = messages[index];
+    if (!message?.id || !activeConv?.id) return;
+    const nextRating = message.rating === rating ? null : rating;
+    try {
+      await updateDoc(doc(db, "users", user.uid, "conversations", activeConv.id, "messages", message.id), { rating: nextRating });
+      setMessages(previous => previous.map((item, itemIndex) => itemIndex === index ? { ...item, rating: nextRating } : item));
+    } catch {
+      setError("Could not save your feedback. Try again.");
+    }
+  };
+
+  const editMessage = (index, message) => {
+    setEditingIndex(index);
+    setSelectedSlashCommand(null);
+    setInput(message.content || "");
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 0);
+  };
+
+  const retryMessage = async (index, fallbackModelId = null) => {
+    const assistant = messages[index];
+    const userIndex = messages.slice(0, index).findLastIndex(message => message.role === "user");
+    if (userIndex < 0 || !activeConv?.id || loading) return;
+    const baseMessages = messages.slice(0, userIndex + 1);
+    const discarded = messages.slice(userIndex + 1).filter(message => message.id);
+    try {
+      await Promise.all(discarded.map(message => deleteDoc(doc(db, "users", user.uid, "conversations", activeConv.id, "messages", message.id))));
+      setMessages(baseMessages);
+      const retryModelId = fallbackModelId || assistant?.modelId || model.id;
+      const retryModel = MODELS.find(item => item.id === retryModelId) || DEFAULT_MODEL;
+      await sendMessage(baseMessages[userIndex].content, { retry: true, baseMessages, forceModel: retryModel });
+    } catch {
+      setError("Could not retry that response. Please try again.");
+    }
+  };
+
+  const createArtifactFromMessage = (message) => {
+    const content = String(message.content || "");
+    const files = extractArtifactFiles(content);
+    const filename = Object.keys(files).find(name => /\.html?$/i.test(name)) || Object.keys(files)[0] || "";
+    const titleSource = content.replace(/```[\s\S]*?```/g, "").split("\n").find(line => line.trim())?.replace(/^#+\s*/, "").trim();
+    const title = (titleSource || filename.replace(/\.[^.]+$/, "") || "New document").slice(0, 90);
+    setArtifact({ kind: Object.keys(files).length ? "website" : "document", title, content, files });
+    setArtifactFile(filename);
+    setArtifactEditing(false);
+  };
+
+  const loadArtifactVersions = async artifactId => {
+    if (!artifactId) { setArtifactVersions([]); return; }
+    setArtifactVersionsLoading(true);
+    const { data, error: versionError } = await db.from("artifact_versions").select("id,title,kind,content,files,created_at").eq("artifact_id", artifactId).order("created_at", { ascending: false });
+    setArtifactVersionsLoading(false);
+    if (versionError) { setError("Couldn't load version history. Check that the artifact library migration is applied."); return; }
+    setArtifactVersions(data || []);
+  };
+
+  const openArtifact = row => {
+    setArtifact({ id: row.id, kind: row.kind, title: row.title, content: row.content || "", files: row.files || {} });
+    setArtifactFile(Object.keys(row.files || {}).find(name => /\.html?$/i.test(name)) || Object.keys(row.files || {})[0] || "");
+    setArtifactEditing(false);
+    loadArtifactVersions(row.id);
+  };
+
+  const saveArtifact = async () => {
+    if (!artifact || !user?.uid || artifactSaving) return;
+    setArtifactSaving(true);
+    const record = { title: (artifact.title || "Untitled artifact").trim().slice(0, 100) || "Untitled artifact", kind: artifact.kind, content: artifact.content || "", files: artifact.files || {} };
+    const result = artifact.id
+      ? await db.from("artifacts").update(record).eq("id", artifact.id).select("id,title,kind,content,files,created_at,updated_at").single()
+      : await db.from("artifacts").insert({ ...record, user_id: user.uid }).select("id,title,kind,content,files,created_at,updated_at").single();
+    setArtifactSaving(false);
+    if (result.error) { setError("Couldn't save this artifact. Check that the artifact library migration is applied, then retry."); return; }
+    setArtifact(result.data);
+    setArtifacts(previous => [result.data, ...previous.filter(item => item.id !== result.data.id)]);
+    await loadArtifactVersions(result.data.id);
+  };
+
+  const restoreArtifactVersion = version => {
+    if (!artifact) return;
+    setArtifact(current => ({ ...current, title: version.title, kind: version.kind, content: version.content || "", files: version.files || {} }));
+    setArtifactFile(Object.keys(version.files || {}).find(name => /\.html?$/i.test(name)) || Object.keys(version.files || {})[0] || "");
+    setArtifactEditing(false);
+  };
+
+  const deleteArtifact = async row => {
+    if (!window.confirm(`Delete “${row.title}” permanently?`)) return;
+    const { error: deleteError } = await db.from("artifacts").delete().eq("id", row.id);
+    if (deleteError) { setError("Couldn't delete that artifact. Try again."); return; }
+    setArtifacts(previous => previous.filter(item => item.id !== row.id));
+    if (artifact?.id === row.id) { setArtifact(null); setArtifactVersions([]); }
+  };
+
+  const messageActionRef = useRef(null);
+  messageActionRef.current = { rateMessage, retryMessage, editMessage, sendMessage, rememberMessage: message => saveMemoryText(message.content), createArtifact: createArtifactFromMessage, answerChoice: choices => sendMessage(`For the artifact, my choices are:\n${choices.map(choice => `- ${choice.question}: ${choice.answer}`).join("\n")}\nPlease continue and create it.`) };
+  const handleMessageRate = useCallback((...args) => messageActionRef.current?.rateMessage(...args), []);
+  const handleMessageRetry = useCallback((...args) => messageActionRef.current?.retryMessage(...args), []);
+  const handleMessageEdit = useCallback((...args) => messageActionRef.current?.editMessage(...args), []);
+  const handleMessageRemember = useCallback((...args) => messageActionRef.current?.rememberMessage(...args), []);
+  const handleMessageArtifact = useCallback((...args) => messageActionRef.current?.createArtifact(...args), []);
+  const handleMessageChoice = useCallback((...args) => messageActionRef.current?.answerChoice(...args), []);
+  const rememberedText = useMemo(() => new Set(memories.map(memory => memory.text.trim().toLowerCase())), [memories]);
+
+  const exportArtifact = (format) => {
+    if (!artifact) return;
+    const filename = artifactFilename(artifact.title);
+    if (format === "md") downloadArtifact(`${filename}.md`, artifact.content, "text/markdown;charset=utf-8");
+    if (format === "html" || format === "pdf") {
+      let html = artifact.kind === "website"
+        ? buildArtifactWebsite(artifact.files)
+        : makeArtifactHtml(artifact.title, artifactPreviewRef.current?.innerHTML || "");
+      if (artifact.kind === "website") {
+        if (/<title>[\s\S]*?<\/title>/i.test(html)) html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtml(artifact.title)}</title>`);
+        else html = html.replace(/<head[^>]*>/i, match => `${match}<title>${escapeHtml(artifact.title)}</title>`);
+      }
+      if (format === "html") downloadArtifact(`${filename}.html`, html, "text/html;charset=utf-8");
+      else {
+        const printWindow = window.open("", "_blank");
+        if (!printWindow) { setError("Allow pop-ups to print this document as a PDF."); return; }
+        printWindow.document.open();
+        printWindow.document.write(html.replace("</head>", "<style>@page{margin:18mm}</style></head>"));
+        printWindow.document.close();
+        window.setTimeout(() => { printWindow.focus(); printWindow.print(); }, 350);
+      }
+    }
   };
 
   const enhancePrompt = async () => {
     if (!input.trim() || enhancing) return;
     setEnhancing(true);
     try {
-      const res = await fetch("/api/openrouter", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: "openai/gpt-oss-20b", messages: [{ role: "system", content: "Rewrite the user's prompt to be highly detailed and effective for AI. Return ONLY the rewritten prompt, nothing else." }, { role: "user", content: input }] }) });
+      const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: "openai/gpt-oss-20b", messages: [{ role: "system", content: "Rewrite the user's prompt to be highly detailed and effective for AI. Return ONLY the rewritten prompt, nothing else." }, { role: "user", content: input }] }) });
       const { data } = await readPayload(res);
       const enhanced = data?.choices?.[0]?.message?.content?.trim();
       if (enhanced) setInput(enhanced);
-    } catch {}
-    setEnhancing(false);
-    await refreshUsageToday();
+      else setError("Could not enhance this prompt. Try again.");
+    } catch {
+      setError("Could not enhance this prompt. Try again.");
+    } finally {
+      setEnhancing(false);
+      await refreshUsageToday();
+    }
   };
 
   const executeDelete = async () => {
     if (!deleteConfirm) return;
-    try { await deleteDoc(doc(db, "users", user.uid, "conversations", deleteConfirm.id)); setConversations(p => p.filter(c => c.id !== deleteConfirm.id)); if (activeConv?.id === deleteConfirm.id) newChat(); } catch {}
+    try { await deleteDoc(doc(db, "users", user.uid, "conversations", deleteConfirm.id)); setConversations(p => p.filter(c => c.id !== deleteConfirm.id)); if (activeConv?.id === deleteConfirm.id) newChat(); } catch { setError("Could not delete that conversation. Try again."); }
     setDeleteConfirm(null);
   };
 
@@ -836,54 +1089,126 @@ useEffect(() => {
       ? "Give a thoughtful, detailed response with reasoning and concrete examples, while staying focused."
       : "Keep the response concise: 3 to 5 sentences, with one clear main point.";
     const extraContext = focus ? `\n\nADDITIONAL USER CONTEXT AND FOCUS:\n${focus}` : "";
+    const savedMemoryContext = memoryEnabled && memories.length
+      ? `\n\nUSER-SAVED MEMORY (use only when relevant; current request takes priority):\n${memories.map(memory => `- ${memory.text}`).join("\n")}`
+      : "";
     setCouncilAnsweredQuestion(question);
     setCouncilLoading(true);
-    setCouncilResults(null);
+    setCouncilErrors({});
+    setCouncilResults({ founder: "", stoic: "", mathematician: "", synthesis: null });
+    setCouncilSaved(false);
+    setCouncilFeedback("");
     try {
       // Run all 3 in parallel
-      const [founderReply, stoicReply, mathReply] = await Promise.all(
-        COUNCIL_PERSONAS.map(p => callOpenRouterOnce(
-          p.model,
-          `${p.prompt}\n\nRESPONSE STYLE:\n${styleInstructions}\n${depthInstructions}`,
-          `${question}${extraContext}`,
-        ))
-      );
-      const partial = { founder: founderReply, stoic: stoicReply, mathematician: mathReply, synthesis: null };
-      setCouncilResults(partial);
+      const results = await Promise.all(COUNCIL_PERSONAS.map(async p => {
+        try {
+          const reply = await callModelOnce(p.model, `${p.prompt}\n\nRESPONSE STYLE:\n${styleInstructions}\n${depthInstructions}`, `${question}${extraContext}${savedMemoryContext}`);
+          setCouncilResults(previous => ({ ...previous, [p.id]: reply }));
+          return { id: p.id, reply };
+        } catch (callError) {
+          setCouncilErrors(previous => ({ ...previous, [p.id]: friendlyError(callError.message) }));
+          return { id: p.id, reply: "" };
+        }
+      }));
+      const partial = { ...Object.fromEntries(results.map(result => [result.id, result.reply])), synthesis: null };
+      const available = Object.entries(partial).filter(([key, reply]) => key !== "synthesis" && reply);
+      if (!available.length) {
+        setError("All Decision Room perspectives failed. Please retry in a moment.");
+      } else {
       setCouncilSynthLoading(true);
       // Synthesis call
-      const synthesisPrompt = `You are a Master Synthesizer. Three experts just debated this question:
+      const synthesisPrompt = `You are a decision facilitator. Three perspectives have considered this question:
 
 "${question}"
 
-THE FOUNDER said: ${founderReply}
+THE FOUNDER said: ${partial.founder || "Unavailable for this run."}
 
-THE STOIC said: ${stoicReply}
+THE STOIC said: ${partial.stoic || "Unavailable for this run."}
 
-THE MATHEMATICIAN said: ${mathReply}
+THE MATHEMATICIAN said: ${partial.mathematician || "Unavailable for this run."}
 
 ${focus ? `ADDITIONAL USER CONTEXT AND FOCUS: ${focus}` : ""}
+${savedMemoryContext}
 
-Your job: Write a final "Council Verdict" that synthesizes the best insights from all three, resolves any contradictions, and gives the user ONE clear, actionable conclusion. ${styleInstructions} ${councilDepth === "detailed" ? "Explain the key reasoning and give a practical next step." : "Keep it concise, up to 6 sentences."} Start with "The Council Verdict:"`;
-      const synthesis = await callOpenRouterOnce("openai/gpt-oss-120b", "You are a Master Synthesizer who combines diverse expert perspectives into clear, actionable verdicts.", synthesisPrompt);
+Your job: turn their strongest insights into a useful decision brief. Do not pretend uncertainty is certainty; if the context is insufficient, say what is still unknown. Do not make high-stakes medical, legal, or financial decisions for the user. ${styleInstructions}
+
+Use these headings:
+## The call
+Give the clearest reasonable recommendation, or say what information is needed before choosing.
+## Why
+Explain the strongest reasons behind it.
+## Tradeoffs and risks
+Name what the user gives up and what could go wrong.
+## Next steps
+Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "Include enough detail to make the actions practical." : "Keep each section concise."}`;
+      const synthesis = await callModelOnce("openai/gpt-oss-120b", "You help people make clearer decisions by weighing competing perspectives, surfacing uncertainty, and turning conclusions into practical next steps.", synthesisPrompt);
       setCouncilResults({ ...partial, synthesis });
+      }
     } catch (e) {
       setError(friendlyError(e.message));
+      setCouncilResults(previous => ({ ...previous, synthesis: null }));
     }
     setCouncilLoading(false);
     setCouncilSynthLoading(false);
     await refreshUsageToday();
   };
 
+  const getDecisionBrief = () => {
+    if (!councilResults?.synthesis) return "";
+    return `# Decision Room brief\n\n**Question:** ${councilAnsweredQuestion}\n\n## Practical perspective\n${councilResults.founder || ""}\n\n## What you control\n${councilResults.stoic || ""}\n\n## Analytical perspective\n${councilResults.mathematician || ""}\n\n${councilResults.synthesis}`;
+  };
+
+  const copyDecisionBrief = async () => {
+    try {
+      await navigator.clipboard.writeText(getDecisionBrief());
+      setCouncilFeedback("Decision brief copied.");
+      window.setTimeout(() => setCouncilFeedback(""), 2400);
+    } catch {
+      setError("Could not copy the brief. Check clipboard permissions and try again.");
+    }
+  };
+
+  const saveDecisionBrief = async () => {
+    if (!user?.uid || !councilResults?.synthesis || councilSaving || councilSaved) return;
+    setCouncilSaving(true);
+    try {
+      const brief = getDecisionBrief();
+      const title = `Decision Room: ${councilAnsweredQuestion.slice(0, 38)}${councilAnsweredQuestion.length > 38 ? "…" : ""}`;
+      const conv = { title, createdAt: serverTimestamp(), model: "GPT OSS 120B", isDecisionRoom: true };
+      const ref = await addDoc(collection(db, "users", user.uid, "conversations"), conv);
+      await addDoc(collection(db, "users", user.uid, "conversations", ref.id, "messages"), { role: "user", content: councilAnsweredQuestion, createdAt: serverTimestamp() });
+      await addDoc(collection(db, "users", user.uid, "conversations", ref.id, "messages"), { role: "assistant", content: brief, createdAt: serverTimestamp(), modelLabel: "Decision Room" });
+      setConversations(previous => [{ id: ref.id, ...conv }, ...previous]);
+      setCouncilSaved(true);
+      setCouncilFeedback("Decision brief saved to your chats.");
+      window.setTimeout(() => setCouncilFeedback(""), 2400);
+    } catch (e) {
+      setError(friendlyError(e.message || "Could not save the decision brief."));
+    } finally {
+      setCouncilSaving(false);
+    }
+  };
+
   const filteredConvs = useMemo(() => conversations.filter(c => (c.title || "").toLowerCase().includes(searchQuery.toLowerCase())), [conversations, searchQuery]);
   const personaConf = activeConv?.isPersona ? PERSONA_BY_ID.get(activeConv.personaId) : null;
 
-  const renderInputArea = (compact = false) => (
+  const renderInputArea = (compact = false) => {
+    const slashQuery = input.match(/(?:^|\s)\/([a-z]*)$/i)?.[1]?.toLowerCase();
+    const slashCommands = editingIndex === null && !selectedSlashCommand && slashQuery !== undefined ? SLASH_COMMANDS.filter(command => command.name.startsWith(slashQuery)) : [];
+    const chooseSlashCommand = command => {
+      const nextInput = input.replace(/(?:^|\s)\/[a-z]*$/i, "").trimEnd();
+      setSelectedSlashCommand(command);
+      if (!command.opensArtifact) setPendingArtifactCommand(null);
+      setInput(nextInput);
+      setSlashIndex(0);
+      requestAnimationFrame(() => { const textarea = textareaRef.current; if (textarea) { textarea.focus(); textarea.setSelectionRange(nextInput.length, nextInput.length); textarea.style.height = "auto"; textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px"; } });
+    };
+    return (
     <div className={compact ? "chat-input-wrap" : "empty-input-container"}>
       {!compact && !activeConv?.isPersona && (
         <div className="mansh-toggle">
-          <div className={`mtoggle-opt ${model.id === MODELS[0].id ? "active" : ""}`} onClick={() => setModel(MODELS[0])}><AppIcon name="sparkles" size={14}/> GPT OSS 120B</div>
-          <div className={`mtoggle-opt ${model.id === MODELS[2].id ? "active" : ""}`} onClick={() => setModel(MODELS[2])}>Qwen 3.8 27B</div>
+          <button type="button" className={`mtoggle-opt ${model.id === MODELS[0].id ? "active" : ""}`} onClick={() => setModel(MODELS[0])}><AppIcon name="sparkles" size={14}/> Mansh Mode</button>
+          <button type="button" className={`mtoggle-opt ${model.id === MODELS[1].id ? "active" : ""}`} onClick={() => setModel(MODELS[1])}>GPT OSS 20B · Fast</button>
         </div>
       )}
       {shadowMode && (
@@ -899,15 +1224,50 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
           <button onClick={() => { setImage(null); setImageBase64(null); if (fileRef.current) fileRef.current.value = ""; }} className="img-chip-rm" aria-label="Remove image"><AppIcon name="close" size={13}/></button>
         </div>
       )}
+      {editingIndex !== null && (
+        <div className="edit-composer-banner">
+          <span><AppIcon name="edit" size={13}/> Editing an earlier message. Sending updates it and regenerates the reply.</span>
+          <button type="button" onClick={() => { setEditingIndex(null); setInput(""); }}>Cancel</button>
+        </div>
+      )}
+      <div className="composer-field">
+      {slashCommands.length > 0 && (
+        <div className="slash-command-menu" role="listbox" aria-label="Prompt commands">
+          <div className="slash-command-heading"><span>QUICK COMMANDS</span><kbd>↑↓</kbd><kbd>ENTER</kbd></div>
+          {slashCommands.map((command, index) => (
+            <button key={command.name} type="button" role="option" aria-selected={index === slashIndex} className={`slash-command-option ${index === slashIndex ? "active" : ""}`} onMouseDown={event => event.preventDefault()} onClick={() => chooseSlashCommand(command)}>
+              <strong>/{command.name}</strong><span>{command.description}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {selectedSlashCommand && (
+        <div className="slash-command-selected" role="status" aria-live="polite">
+          <span className="slash-command-selected-mark">/{selectedSlashCommand.name}</span>
+          <span className="slash-command-selected-copy"><strong>{selectedSlashCommand.description}</strong><small>COMMAND ACTIVE · APPLIES TO YOUR NEXT MESSAGE</small></span>
+          <button type="button" aria-label={`Remove /${selectedSlashCommand.name} command`} onClick={() => setSelectedSlashCommand(null)}><AppIcon name="close" size={15}/></button>
+        </div>
+      )}
       <div className={`input-pill ${shadowMode ? "shadow-pill" : ""}`}>
         <textarea
           ref={textareaRef}
           className="input-ta"
           aria-label="Message Manshverse"
-          placeholder={shadowMode ? "State your belief... I'll find its weakness." : (activeConv?.isPersona ? `Message ${activeConv.title.replace("Chat with ", "")}...` : "Ask me anything...")}
+          placeholder={editingIndex !== null ? "Update your message…" : selectedSlashCommand ? "Add a topic or details…" : shadowMode ? "State your belief... I'll find its weakness." : (activeConv?.isPersona ? `Message ${activeConv.title.replace("Chat with ", "")}...` : "Message Manshverse…")}
           value={input}
-          onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
-          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+          onChange={e => { setInput(e.target.value); setSlashIndex(0); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
+          onKeyDown={e => {
+            if (slashCommands.length && e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(index => (index + 1) % slashCommands.length); return; }
+            if (slashCommands.length && e.key === "ArrowUp") { e.preventDefault(); setSlashIndex(index => (index - 1 + slashCommands.length) % slashCommands.length); return; }
+            if (slashCommands.length && (e.key === "Enter" || e.key === "Tab")) {
+              e.preventDefault();
+              const command = slashCommands[slashIndex] || slashCommands[0];
+              if (command) chooseSlashCommand(command);
+              return;
+            }
+            if (e.key === "Escape" && slashQuery !== undefined) { e.preventDefault(); setInput(input.replace(/\/[a-z]*$/i, "")); return; }
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+          }}
           rows={1}
         />
         <div className="input-actions">
@@ -917,13 +1277,15 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             </button>
           )}
           {/* FIX: use arrow function to prevent event object being passed as overrideInput */}
-          <button type="button" className="send-btn" onClick={() => sendMessage()} disabled={(!input.trim() && !imageBase64) || loading} aria-label={loading ? "Sending message" : "Send message"}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+          <button type="button" className="send-btn" onClick={() => sendMessage()} disabled={(!input.trim() && !imageBase64 && !selectedSlashCommand) || loading} aria-label={loading ? "Generating response" : editingIndex !== null ? "Update message" : "Send message"}>
+            {loading ? <span className="send-loading-ring"/> : editingIndex !== null ? <AppIcon name="check" size={17}/> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>}
           </button>
         </div>
       </div>
+      </div>
       {!compact && (
         <div className="quick-actions">
+          <button className="qa-chip" onClick={() => setView("memory")}><AppIcon name="save" size={13}/> Memory {memoryEnabled && memories.length ? `· ${memories.length}` : ""}</button>
           <button className="qa-chip" onClick={enhancePrompt} disabled={enhancing || !input.trim()}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             {enhancing ? "Enhancing..." : "Enhance Prompt"}
@@ -939,6 +1301,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
       )}
       {compact && (
         <div className="compact-quick-actions">
+          <button className="qa-chip" onClick={() => setView("memory")}><AppIcon name="save" size={13}/> Memory</button>
           <button className="qa-chip" onClick={enhancePrompt} disabled={enhancing || !input.trim()}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             {enhancing ? "..." : "Enhance"}
@@ -948,15 +1311,20 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
           </button>
         </div>
       )}
-      <div className="composer-hint"><span>Enter to send</span><i/>Shift + Enter for a new line</div>
+      <div className="composer-hint"><span>Enter to send</span><i/>Shift + Enter for a new line<i/><span>Type / for commands</span></div>
       <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile}/>
     </div>
   );
+  };
 
-  const handleCopyMessage = useCallback((index, content) => {
-    navigator.clipboard.writeText(content);
-    setCopied(index);
-    setTimeout(() => setCopied(null), 2000);
+  const handleCopyMessage = useCallback(async (index, content) => {
+    try {
+      await navigator.clipboard.writeText(content || "");
+      setCopied(index);
+      window.setTimeout(() => setCopied(null), 1800);
+    } catch {
+      setError("Could not copy this message. Check clipboard permissions.");
+    }
   }, []);
   const chatUserName = user?.displayName || "You";
   const chatUserInitial = (user?.displayName?.[0] || user?.email?.[0] || "U").toUpperCase();
@@ -1096,7 +1464,6 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
         .mdrop-wrap{position:relative;}
         .mdrop-btn{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:12px;padding:8px 16px;font-size:13.5px;color:#ddd;cursor:pointer;transition:0.2s;font-weight:500;font-family:'Manrope';}
         .mdrop-btn:hover{background:rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.16);}
-        .mdot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
         .mdrop-menu{position:absolute;top:calc(100%+10px);left:0;background:rgba(8,8,12,0.98);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:8px;min-width:290px;z-index:400;box-shadow:0 12px 32px rgba(0,0,0,0.55);}
         .mdrop-item{padding:12px 14px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:0.15s;}
         .mdrop-item:hover{background:rgba(255,255,255,0.05);}
@@ -1239,8 +1606,12 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
         .council-loading{display:flex;align-items:center;gap:12px;padding:12px 0 2px;color:#a6a2b6;font-size:12px;}
         .council-progress{max-width:900px;margin:-8px auto 24px;padding:17px 19px;border:1px solid rgba(167,139,250,0.2);border-radius:15px;background:rgba(124,92,252,0.07);color:#aaa8b8;font-size:12px;line-height:1.6;}
         .council-progress strong{display:block;color:#e2def0;font-size:13px;margin-bottom:3px;}
-        .council-next{grid-column:1/-1;display:flex;justify-content:center;padding:2px 0 36px;}
+        .council-next{grid-column:1/-1;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:9px;padding:2px 0 36px;}
         .council-next .qa-chip{display:flex;align-items:center;gap:7px;}
+        .council-result-action{display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);padding:9px 13px;color:#d8d4e2;font:600 11px 'Manrope',sans-serif;cursor:pointer;transition:background .18s,border-color .18s;}
+        .council-result-action:hover:not(:disabled){background:rgba(167,139,250,.12);border-color:rgba(167,139,250,.32);}
+        .council-result-action:disabled{opacity:.55;cursor:default;}
+        .council-feedback{flex-basis:100%;min-height:14px;text-align:center;color:#a99dd1;font-size:11px;}
         @media(max-width:900px){.council-results{grid-template-columns:1fr;}.council-card{display:grid;grid-template-columns:210px minmax(0,1fr);}.council-card-head{border-bottom:0;border-right:1px solid rgba(255,255,255,0.06);align-items:flex-start;}.council-synthesis{grid-column:auto;}}
         @media(max-width:600px){.council-wrap{padding:28px 15px;}.council-header{margin-bottom:23px;}.council-title{letter-spacing:-.8px;}.council-sub{font-size:13px;}.council-flow{gap:6px;margin-top:17px;}.council-flow-step{font-size:10px;padding:7px 9px;}.council-flow-arrow{font-size:10px;}.council-input-wrap{padding:15px;border-radius:18px;margin-bottom:22px;}.council-ta{font-size:14px;min-height:110px;}.council-options{grid-template-columns:1fr;gap:14px;}.council-focus-wrap{grid-column:auto;}.council-actions{align-items:flex-end;}.council-shortcut{max-width:110px;line-height:1.5;}.council-btn{padding:10px 12px;font-size:11px;}.council-card{display:block;}.council-card-head{border-right:0;border-bottom:1px solid rgba(255,255,255,0.06);}.council-synthesis{padding:18px;}}
         @keyframes slideIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
@@ -1459,6 +1830,8 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
         </div>
       )}
 
+      {artifact && <ArtifactStudio artifact={artifact} setArtifact={setArtifact} artifactEditing={artifactEditing} setArtifactEditing={setArtifactEditing} artifactFile={artifactFile} setArtifactFile={setArtifactFile} artifactPreviewRef={artifactPreviewRef} exportArtifact={exportArtifact} saveArtifact={saveArtifact} artifactSaving={artifactSaving} versions={artifactVersions} versionsLoading={artifactVersionsLoading} onRestoreVersion={restoreArtifactVersion} onClose={() => setArtifact(null)}/>}
+
       {/* ── PERSONA ONBOARDING ── */}
       {onboardingPersona && onboardingPersona.fields?.length > 0 && (
         <div className="overlay" onClick={() => setOnboardingPersona(null)}>
@@ -1520,6 +1893,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                 <div style={{ textAlign:"center", marginBottom:"36px" }}>
                   <div style={{ fontSize:"28px", fontWeight:700, color:"#fff", marginBottom:"8px" }}>Upgrade Manshverse</div>
                   <div style={{ fontSize:"14px", color:"#555" }}>Unlock higher limits and premium features</div>
+                  {upgradeReason && <div style={{ marginTop:"12px", color:"#c6a9ff", fontSize:"12px" }}>{upgradeReason}</div>}
                 </div>
                 <div className="upg-grid">
                   <div className="upg-card">
@@ -1545,7 +1919,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                     <button className="upg-btn purple" onClick={() => submitUpgrade("ultra")} disabled={submitting}>{submitting ? "Sending..." : "Get Yearly Plan"}</button>
                   </div>
                 </div>
-                <div className="upg-note">UPI ID: <span style={{color:"#888"}}>{UPI_ID}</span> · Send payment then click upgrade · We activate within a few hours</div>
+                <div className="upg-note">Manual UPI request · <span style={{color:"#888"}}>{UPI_ID}</span> · Your plan stays unchanged until payment and request are reviewed and confirmed. We aim to respond within a few hours.</div>
               </>
             )}
           </div>
@@ -1607,7 +1981,13 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             </button>
             <button type="button" className={`sb-item ${view === "council" ? "active" : ""}`} onClick={() => { setView("council"); if (isMobile) setSidebarOpen(false); }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-              Council of Minds
+              Decision Room
+            </button>
+            <button type="button" className={`sb-item ${view === "memory" ? "active" : ""}`} onClick={() => { setView("memory"); if (isMobile) setSidebarOpen(false); }}>
+              <AppIcon name="save" size={15}/> Memory <span className="sb-item-count">{memories.length}</span>
+            </button>
+            <button type="button" className={`sb-item ${view === "artifacts" ? "active" : ""}`} onClick={() => { setView("artifacts"); loadArtifacts(); if (isMobile) setSidebarOpen(false); }}>
+              <AppIcon name="document" size={15}/> Artifacts <span className="sb-item-count">{artifacts.length}</span>
             </button>
             <div className="sb-section">Recent</div>
             {filteredConvs.length === 0 && <p className="sb-empty">{searchQuery ? "No conversations found." : "Your conversations will appear here."}</p>}
@@ -1615,7 +1995,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
               <div key={conv.id} className={`sb-conv ${activeConv?.id === conv.id ? "active" : ""}`}>
                 <button type="button" className="sb-conv-open" onClick={() => { selectConv(conv); if (isMobile) setSidebarOpen(false); }} aria-current={activeConv?.id === conv.id ? "page" : undefined}>
                   <span className="sb-conv-title">{conv.title || "Untitled"}</span>
-                  <span className="sb-conv-sub">{conv.isPersona ? "Persona" : conv.model || "—"}</span>
+                  <span className="sb-conv-sub">{conv.isDecisionRoom ? "Decision brief" : conv.isPersona ? "Persona" : conv.model || "—"}</span>
                 </button>
                 <button type="button" className="sb-del" aria-label={`Delete ${conv.title || "untitled conversation"}`} onClick={() => setDeleteConfirm(conv)}><AppIcon name="close" size={13}/></button>
               </div>
@@ -1665,7 +2045,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                   {activeConv?.isPersona ? (
                     <><AppIcon name={personaConf?.id || "sparkles"} size={16}/>{activeConv.title.replace("Chat with ", "")}</>
                   ) : (
-                    <><span className="mdot" style={{ background: model.color }}/>{model.label}<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{marginLeft:4}}><polyline points="6 9 12 15 18 9"/></svg></>
+                    <>{model.label}<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{marginLeft:4}}><polyline points="6 9 12 15 18 9"/></svg></>
                   )}
                 </button>
                 {modelDropdown && !activeConv?.isPersona && (
@@ -1674,7 +2054,6 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                       <div key={m.id}>
                         {i === 1 && <div className="mdrop-divider"/>}
                         <div className={`mdrop-item ${model.id === m.id ? "sel" : ""}`} onClick={() => { setModel(m); setModelDropdown(false); }}>
-                          <span className="mdot" style={{ background: m.color }}/>
                           <div style={{ flex: 1 }}>
                             <div className="mdrop-name">{m.label} {m.vision && <span style={{fontSize:"10px",color:"#fca5a5",background:"rgba(252,165,165,0.1)",border:"1px solid rgba(252,165,165,0.2)",borderRadius:"4px",padding:"1px 5px",marginLeft:"4px"}}>Vision</span>}</div>
                             <div className="mdrop-desc">{m.desc}</div>
@@ -1689,8 +2068,10 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             )}
             {view === "chat" && <div className="chat-topbar-context"><span>CONVERSATION</span><strong>{activeConv?.title?.replace("Chat with ", "") || "New conversation"}</strong></div>}
             {view === "council" && (
-              <div className="council-topbar-title"><AppIcon name="council" size={16}/> Council of Minds</div>
+              <div className="council-topbar-title"><AppIcon name="council" size={16}/> Decision Room</div>
             )}
+            {view === "memory" && <div className="council-topbar-title"><AppIcon name="save" size={16}/> Memory</div>}
+            {view === "artifacts" && <div className="council-topbar-title"><AppIcon name="document" size={16}/> Artifact library</div>}
             <div className="topbar-right">
               {/* Atmosphere indicator */}
               <div className="atm-dot" title={`Atmosphere: ${atm.label}`}/>
@@ -1738,7 +2119,52 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             </div>
           )}
 
+          {view === "memory" && (
+            <section className="memory-page" aria-labelledby="memory-title">
+              <div className="memory-inner">
+                <button type="button" className="memory-back" onClick={() => setView("chat")}>← Back to chat</button>
+                <p className="memory-eyebrow"><AppIcon name="save" size={13}/> YOUR PERSONAL CONTEXT</p>
+                <div className="memory-title-row">
+                  <div><h1 id="memory-title">Memory</h1><p>Save details you want Manshverse to carry into future chats. Nothing is saved unless you add it.</p></div>
+                  <button type="button" className={`memory-toggle ${memoryEnabled ? "on" : ""}`} onClick={toggleMemoryUse} aria-pressed={memoryEnabled}>
+                    <span className="memory-toggle-dot"/>{memoryEnabled ? "Memory on" : "Memory off"}
+                  </button>
+                </div>
+                <form className="memory-form" onSubmit={async event => { event.preventDefault(); if (await saveMemoryText(memoryDraft)) setMemoryDraft(""); }}>
+                  <label htmlFor="memory-draft">Add a memory</label>
+                  <textarea id="memory-draft" value={memoryDraft} maxLength={500} onChange={event => setMemoryDraft(event.target.value)} placeholder="For example: I prefer concise answers and work primarily in React."/>
+                  <div className="memory-form-foot"><span>{memoryDraft.length}/500 · Private to your account</span><button type="submit" disabled={!memoryDraft.trim() || memories.length >= 30}><AppIcon name="save" size={13}/> Save memory</button></div>
+                </form>
+                {memoryFeedback && <div className="memory-feedback" role="status" aria-live="polite">{memoryFeedback}</div>}
+                <div className="memory-list-head"><h2>Saved memories</h2><span>{memories.length}/30</span></div>
+                {memories.length ? (
+                  <div className="memory-list">
+                    {memories.map(memory => (
+                      <article className="memory-card" key={memory.id}>
+                        <p>{memory.text}</p>
+                        <button type="button" aria-label="Delete memory" title="Delete memory" onClick={() => removeMemory(memory.id)}><AppIcon name="trash" size={14}/></button>
+                      </article>
+                    ))}
+                  </div>
+                ) : <div className="memory-empty"><AppIcon name="sparkles" size={20}/><strong>No memories saved yet</strong><span>Use “Remember” under any of your messages, or add a note above.</span></div>}
+                <p className="memory-privacy">When enabled, saved memories are included as context in your requests to Groq. Remove anything you no longer want used.</p>
+              </div>
+            </section>
+          )}
+
           {/* ── PERSONAS VIEW ── */}
+          {view === "artifacts" && (
+            <section className="artifact-library">
+              <header><p>MANSHVERSE / YOUR WORK</p><h1>Artifacts<span>.</span></h1><div>Websites and documents you save from a conversation, ready to reopen and continue editing.</div></header>
+              {artifactsLoading ? <p className="artifact-library-empty" role="status">Loading your artifacts…</p> : artifacts.length ? <div className="artifact-library-grid">
+                {artifacts.map(item => <article className="artifact-library-card" key={item.id}>
+                  <button type="button" className="artifact-library-open" onClick={() => openArtifact(item)}><span>{item.kind === "website" ? "WEBSITE" : "DOCUMENT"}</span><strong>{item.title}</strong><small>Updated {formatMessageTime(item.updated_at)}</small></button>
+                  <button type="button" className="artifact-library-delete" aria-label={`Delete ${item.title}`} onClick={() => deleteArtifact(item)}><AppIcon name="trash" size={14}/></button>
+                </article>)}
+              </div> : <div className="artifact-library-empty"><AppIcon name="document" size={25}/><strong>No saved artifacts yet</strong><span>Use Create under a response, then save it from Artifact Studio.</span><button type="button" onClick={() => { newChat(); setInput("Create a simple website"); }}>Start with a website</button></div>}
+            </section>
+          )}
+
           {view === "personas" && (
             <div className="gallery">
               <div className="gallery-inner">
@@ -1796,9 +2222,9 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             <div className="council-wrap">
               <div className="council-inner">
                 <div className="council-header">
-                  <div className="council-eyebrow"><AppIcon name="sparkles" size={13}/> A multi-perspective answer</div>
-                  <div className="council-title"><AppIcon name="council"/>Council of Minds</div>
-                  <div className="council-sub">One question, three distinct ways of thinking, and a clear verdict that brings the strongest ideas together.</div>
+                  <div className="council-eyebrow"><AppIcon name="sparkles" size={13}/> Think it through, leave with a plan</div>
+                  <div className="council-title"><AppIcon name="council"/>Decision Room</div>
+                  <div className="council-sub">Bring a real choice and your context. Three perspectives weigh it, then turn the strongest thinking into a brief you can keep and act on.</div>
                   <div className="council-flow" aria-label="The council process">
                     <span className="council-flow-step" style={{"--step-color":"#4ade80"}}><AppIcon name="star" size={13}/> Practical</span>
                     <span className="council-flow-arrow" aria-hidden="true">→</span>
@@ -1812,14 +2238,14 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
 
                 <div className="council-input-wrap">
                   <label className="council-input-label" htmlFor="council-question">
-                    <span>What are you thinking through?</span>
+                    <span>What decision or problem are you facing?</span>
                     <span>{councilQuestion.length} characters</span>
                   </label>
                   <textarea
                     id="council-question"
                     className="council-ta"
-                    aria-label="Your question for the Council of Minds"
-                    placeholder="Give the council a real decision, dilemma, or question to work through…"
+                    aria-label="Describe the decision or problem you are facing"
+                    placeholder="Describe the choice you need to make, what matters most, and any deadline…"
                     value={councilQuestion}
                     onChange={e => setCouncilQuestion(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); runCouncil(); } }}
@@ -1851,7 +2277,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                         </div>
                       </div>
                       <label className="council-focus-wrap">
-                        <span className="council-option-label">Extra context or what you want the council to focus on <span style={{fontWeight:400,color:"#777687"}}>· optional</span></span>
+                        <span className="council-option-label">Context that could change the recommendation <span style={{fontWeight:400,color:"#777687"}}>· optional</span></span>
                         <textarea className="council-focus" value={councilFocus} onChange={e => setCouncilFocus(e.target.value)} placeholder="For example: I have two months of savings and want to stay in Bengaluru…" />
                       </label>
                     </div>
@@ -1862,7 +2288,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                       {councilLoading ? (
                         <><div className="t-dot"/><div className="t-dot"/><div className="t-dot"/><span style={{marginLeft:6}}>The council is thinking…</span></>
                       ) : (
-                        <><span>Get three perspectives</span><AppIcon name="council" size={15}/></>
+                        <><span>Build my decision brief</span><AppIcon name="council" size={15}/></>
                       )}
                     </button>
                   </div>
@@ -1870,7 +2296,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
 
                 {councilLoading && !councilResults && (
                   <div className="council-progress" role="status" aria-live="polite">
-                    <strong>The three perspectives are forming</strong>
+                    <strong>Your decision brief is taking shape</strong>
                     The Founder, Stoic, and Mathematician are considering your question in parallel.
                     <div className="council-loading"><div className="t-dot"/><div className="t-dot"/><div className="t-dot"/><span>Gathering their responses…</span></div>
                   </div>
@@ -1879,9 +2305,9 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                 {councilResults && (
                   <div className="council-results">
                     <div className="council-question-summary"><AppIcon name="sparkles" size={15}/><span><strong>The question:</strong> {councilAnsweredQuestion}</span></div>
+                    {Object.keys(councilErrors).length > 0 && <p className="council-partial-note" role="status">Some perspectives did not respond. The brief uses the available replies.</p>}
                     {COUNCIL_PERSONAS.map((persona, i) => {
                       const reply = councilResults[persona.id];
-                      if (!reply) return null;
                       return (
                         <div className="council-card" key={persona.id} style={{ animationDelay: `${i * 0.1}s` }}>
                           <div className="council-card-head">
@@ -1894,7 +2320,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
                             </div>
                           </div>
                           <div className="council-card-body">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{reply}</ReactMarkdown>
+                            {reply ? <Suspense fallback={<p className="council-perspective-status" role="status">Preparing formatted response…</p>}><MarkdownText>{reply}</MarkdownText></Suspense> : <p className="council-perspective-status" role="status">{councilErrors[persona.id] || (councilLoading ? "Considering your question…" : "This perspective did not return a response.")}</p>}
                           </div>
                         </div>
                       );
@@ -1912,19 +2338,24 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
 
                     {councilResults.synthesis && (
                       <div className="council-synthesis">
-                        <div className="council-synth-label"><AppIcon name="bolt" size={14}/> The council verdict</div>
+                        <div className="council-synth-label"><AppIcon name="bolt" size={14}/> Your decision brief</div>
                         <div className="council-synth-body">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{councilResults.synthesis}</ReactMarkdown>
+                          <Suspense fallback={<p className="council-perspective-status" role="status">Preparing your brief…</p>}><MarkdownText>{councilResults.synthesis}</MarkdownText></Suspense>
                         </div>
                       </div>
                     )}
 
                     {councilResults.synthesis && (
                       <div className="council-next">
+                        <button className="council-result-action" onClick={copyDecisionBrief}><AppIcon name="copy" size={14}/> Copy brief</button>
+                        <button className="council-result-action" onClick={saveDecisionBrief} disabled={councilSaved || councilSaving}>
+                          <AppIcon name={councilSaved ? "check" : "save"} size={14}/>{councilSaved ? "Saved to chats" : councilSaving ? "Saving…" : "Save to chats"}
+                        </button>
                         <button className="qa-chip" onClick={() => { setCouncilResults(null); setCouncilQuestion(""); setCouncilAnsweredQuestion(""); document.getElementById("council-question")?.focus(); }}>
                           <AppIcon name="refresh" size={14}/>
-                          Ask Another Question
+                          New decision
                         </button>
+                        <span className="council-feedback" role="status" aria-live="polite">{councilFeedback}</span>
                       </div>
                     )}
                   </div>
@@ -1957,30 +2388,33 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             <>
               <div className="msgs-wrap" ref={msgsWrapRef}>
                 <div className="msgs-inner">
-                  {messages.map((msg, i) => (
+                  <div className="thread-index" aria-label="Conversation details">
+                    <span><i aria-hidden="true"/> THREAD / {(activeConv?.id || "DRAFT").slice(0, 6).toUpperCase()}</span>
+                    <span>{messages.filter(message => message.role !== "routing").length.toString().padStart(2, "0")} ENTRIES</span>
+                  </div>
+                  <Suspense fallback={<div className="stream-status" role="status">Loading conversation…</div>}>{messages.map((msg, i) => (
                     <MessageItem
                       key={msg.id || `message-${i}`}
                       msg={msg}
                       index={i}
                       userName={chatUserName}
                       userInitial={chatUserInitial}
+                      userAvatar={user?.photoURL}
                       personaId={personaConf?.id}
                       personaName={chatPersonaName}
                       personaBackground={chatPersonaBackground}
                       shadowMode={shadowMode}
                       isCopied={copied === i}
                       onCopy={handleCopyMessage}
+                      onRate={handleMessageRate}
+                      onRetry={handleMessageRetry}
+                      onEdit={handleMessageEdit}
+                      onRemember={handleMessageRemember}
+                      onArtifact={handleMessageArtifact}
+                      onChoice={handleMessageChoice}
+                      isRemembered={rememberedText.has(String(msg.content || "").trim().toLowerCase())}
                     />
-                  ))}
-                  {loading && messages[messages.length-1]?.streaming && !messages[messages.length-1]?.content && (
-                    <div className="msg">
-                      <div className="msg-head">
-                        <div className="msg-av" style={{ background:"rgba(108,71,255,0.15)", color:"var(--atm-accent)", border:"1px solid rgba(108,71,255,0.3)" }}>M</div>
-                        <div className="msg-name" style={{ color:"var(--atm-accent)" }}>{model.label}</div>
-                      </div>
-                      <div className="typing-wrap"><div className="t-dot"/><div className="t-dot"/><div className="t-dot"/></div>
-                    </div>
-                  )}
+                  ))}</Suspense>
                   <div ref={bottomRef}/>
                 </div>
               </div>

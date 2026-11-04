@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import BrandMark from "../components/BrandMark";
 import AppIcon from "../components/AppIcon";
+import SiteFooter from "../components/SiteFooter";
 import "./home.css";
 
 export default function Home({ user }) {
@@ -36,14 +37,14 @@ export default function Home({ user }) {
     <section className="home-inside" id="inside" aria-labelledby="inside-title">
       <div className="home-inside-head"><div><p className="home-section-label">THE MANSHVERSE INDEX / 001—004</p><h2 id="inside-title">Pick a perspective.</h2></div><span>One workspace.<br/>Many ways forward.</span></div>
       <div className="home-feature-grid">
-        <article className="home-feature feature-mansh"><span className="feature-no">01</span><div className="feature-symbol symbol-route">↗</div><h3>GPT OSS 120B</h3><p>Work through complex questions with Groq hosted reasoning and general chat.</p><span className="feature-type">DEEP REASONING</span></article>
-        <article className="home-feature feature-qwen"><span className="feature-no">02</span><div className="feature-symbol symbol-qwen">∴</div><h3>GPT OSS 20B</h3><p>Get quick answers and practical help from a smaller, fast model.</p><span className="feature-type">FAST RESPONSES</span></article>
-        <article className="home-feature feature-gptoss"><span className="feature-no">03</span><div className="feature-symbol symbol-gptoss"><AppIcon name="sparkles" size={36}/></div><h3>Qwen 3.8 27B</h3><p>Explore multimodal prompts, coding, and reasoning with Qwen hosted on Groq.</p><span className="feature-type">IDEAS &amp; MAKING</span></article>
+        <article className="home-feature feature-gptoss"><span className="feature-no">01</span><div className="feature-symbol symbol-gptoss">↗</div><h3>GPT OSS 120B</h3><p>A larger reasoning model for complex questions, analysis, and plans.</p><span className="feature-type">DEEPER REASONING</span></article>
+        <article className="home-feature feature-mansh"><span className="feature-no">02</span><div className="feature-symbol symbol-route">∴</div><h3>GPT OSS 20B</h3><p>A faster, lighter model for everyday questions and practical help.</p><span className="feature-type">QUICK RESPONSES</span></article>
+        <article className="home-feature feature-qwen"><span className="feature-no">03</span><div className="feature-symbol symbol-qwen"><AppIcon name="sparkles" size={36}/></div><h3>Qwen 3.8 27B</h3><p>Used for image requests and artifact generation in Mansh Mode.</p><span className="feature-type">IMAGES &amp; ARTIFACTS</span></article>
         <article className="home-feature feature-personas"><span className="feature-no">04</span><div className="feature-symbol symbol-persona">◌</div><h3>Persona conversations</h3><p>Explore historical, professional, and fictional perspectives in dedicated chats.</p><span className="feature-type">A DIFFERENT PERSPECTIVE</span></article>
       </div>
     </section>
 
     <section className="home-outro"><p className="home-section-label">THERE’S ALWAYS ANOTHER ANGLE</p><h2>Follow the<br/><em>question further.</em></h2><Link className="home-primary" to={enterHref}>{user ? "OPEN YOUR WORKSPACE" : "MAKE YOUR WAY IN"}<span aria-hidden="true">↗</span></Link></section>
-    <footer className="home-footer"><Link className="home-brand" to="/"><BrandMark size={25}/><span>Manshverse<span className="brand-period">.</span></span></Link><span>A space for the questions that stay with you.</span><span>© {new Date().getFullYear()} Manshverse</span></footer>
+    <SiteFooter/>
   </main>;
 }

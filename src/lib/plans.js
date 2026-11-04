@@ -7,18 +7,15 @@ export const PLAN_META = {
 };
 
 export const MODEL_LIMIT_FIELDS = [
-  { key: "openrouter/free", short: "Mansh Mode", color: "#facc15" },
-  { key: "nvidia/nemotron-3-ultra-550b-a55b:free", short: "Nemotron 3 Ultra", color: "#a78bfa" },
-  { key: "nvidia/nemotron-3.5-super-vl:free", short: "Nemotron 3.5 Super VL", color: "#67e8f9" },
-  { key: "nvidia/nemotron-3.5-lightning:free", short: "Nemotron 3.5 Lightning", color: "#86efac" },
-  { key: "google/gemma-4-26b-a4b-it:free", short: "Gemma 4 26B A4B", color: "#fca5a5" },
-  { key: "cohere/north-mini-code:free", short: "North Mini Code", color: "#fde68a" },
+  { key: "openai/gpt-oss-20b", short: "GPT OSS 20B", color: "#67e8f9" },
+  { key: "openai/gpt-oss-120b", short: "GPT OSS 120B", color: "#a78bfa" },
+  { key: "qwen/qwen3.8-27b", short: "Qwen 3.8 27B", color: "#86efac" },
 ];
 
 export const DEFAULT_PLAN_LIMITS = {
-  free:  { "openrouter/free": 3, "nvidia/nemotron-3-ultra-550b-a55b:free": 10, "nvidia/nemotron-3.5-super-vl:free": 30, "nvidia/nemotron-3.5-lightning:free": 5, "google/gemma-4-26b-a4b-it:free": 10, "cohere/north-mini-code:free": 50 },
-  pro:   { "openrouter/free": 30, "nvidia/nemotron-3-ultra-550b-a55b:free": 75, "nvidia/nemotron-3.5-super-vl:free": 300, "nvidia/nemotron-3.5-lightning:free": 50, "google/gemma-4-26b-a4b-it:free": 75, "cohere/north-mini-code:free": 500 },
-  ultra: { "openrouter/free": Infinity, "nvidia/nemotron-3-ultra-550b-a55b:free": Infinity, "nvidia/nemotron-3.5-super-vl:free": Infinity, "nvidia/nemotron-3.5-lightning:free": Infinity, "google/gemma-4-26b-a4b-it:free": Infinity, "cohere/north-mini-code:free": Infinity },
+  free:  { "openai/gpt-oss-20b": 5, "openai/gpt-oss-120b": 10, "qwen/qwen3.8-27b": 10 },
+  pro:   { "openai/gpt-oss-20b": 50, "openai/gpt-oss-120b": 75, "qwen/qwen3.8-27b": 75 },
+  ultra: { "openai/gpt-oss-20b": Infinity, "openai/gpt-oss-120b": Infinity, "qwen/qwen3.8-27b": Infinity },
 };
 
 const UNLIMITED_VALUES = new Set(["", "inf", "infinity", "unlimited", "∞"]);

@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
-import { useContext, useEffect, useState } from "react";
-import { AuthContext } from "./context/AuthContext";
+import { lazy, Suspense, useContext, useEffect, useState } from "react";
+import { AuthContext } from "./context/auth-context";
 import { supabase } from "./supabase";
 import { auth } from "./lib/supabaseAuth";
 import { doc, onSnapshot } from "./lib/firestore";
@@ -8,12 +8,16 @@ import { signOut } from "./lib/supabaseAuth";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Home from "./pages/Home";
-import { AuthCallback, ForgotPassword, Onboarding, ResetPassword } from "./pages/AccountFlows";
-import Chat from "./pages/Chat";
-import Profile from "./pages/Profile";
-import Analytics from "./pages/Analytics";
+const AuthCallback = lazy(() => import("./pages/AccountFlows").then(module => ({ default: module.AuthCallback })));
+const ForgotPassword = lazy(() => import("./pages/AccountFlows").then(module => ({ default: module.ForgotPassword })));
+const Onboarding = lazy(() => import("./pages/AccountFlows").then(module => ({ default: module.Onboarding })));
+const ResetPassword = lazy(() => import("./pages/AccountFlows").then(module => ({ default: module.ResetPassword })));
+const Chat = lazy(() => import("./pages/Chat"));
+const Profile = lazy(() => import("./pages/Profile"));
+const Analytics = lazy(() => import("./pages/Analytics"));
 import { STARS } from "./lib/stars";
 import BrandMark from "./components/BrandMark";
+import { InfoPage, CookieNotice } from "./pages/InfoPages";
 
 
 
@@ -190,6 +194,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <Suspense fallback={<LoadingScreen />}>
       <Routes>
         {/* Public front door: visitors and signed-in users both land here. */}
         <Route path="/" element={<Home user={user} />} />
@@ -208,6 +213,15 @@ function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/onboarding" element={user ? <Onboarding /> : <Navigate to="/login" replace />} />
 
+        {/* Public product and policy pages */}
+        <Route path="/about" element={<InfoPage page="about" />} />
+        <Route path="/help" element={<InfoPage page="help" />} />
+        <Route path="/terms" element={<InfoPage page="terms" />} />
+        <Route path="/privacy" element={<InfoPage page="privacy" />} />
+        <Route path="/cookies" element={<InfoPage page="cookies" />} />
+        <Route path="/code-of-conduct" element={<InfoPage page="conduct" />} />
+        <Route path="/ai-use" element={<InfoPage page="ai" />} />
+
         {/* Protected routes */}
         <Route path="/chat"    element={<ProtectedRoute user={user} dbUser={dbUser}><Chat /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute user={user} dbUser={dbUser}><Profile /></ProtectedRoute>} />
@@ -221,6 +235,8 @@ function App() {
         {/* Catch-all */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </Suspense>
+      <CookieNotice />
     </BrowserRouter>
   );
 }
