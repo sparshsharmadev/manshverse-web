@@ -5,6 +5,16 @@ export const auth = {};
 export const googleProvider = { provider: "google" };
 export const githubProvider = { provider: "github" };
 
+export const oauthErrorMessage = (provider, error) => {
+  const label = provider === "google" ? "Google" : "GitHub";
+  const detail = `${error?.message || ""} ${error?.code || ""}`;
+  if (error?.status === 0 || /fetch|network|offline/i.test(detail)) return "Couldn't reach the sign-in service. Check your connection and try again.";
+  if (/provider.*(?:not enabled|disabled)|unsupported provider/i.test(detail)) return `${label} sign-in is not enabled in the Supabase Auth settings.`;
+  if (/redirect.*(?:not allowed|allowlist|whitelist)/i.test(detail)) return `The ${label} sign-in return URL is not allowed in Supabase Auth settings.`;
+  if (/redirect_uri_mismatch/i.test(detail)) return `The ${label} OAuth callback URL does not match its provider configuration.`;
+  return `${label} sign-in couldn't be completed. Check the provider configuration and try again.`;
+};
+
 const toCompatUser = (user) => user ? {
   ...user,
   uid: user.id,

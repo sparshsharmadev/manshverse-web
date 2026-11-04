@@ -17,8 +17,8 @@ AI chat platform with multiple models, personas, analytics, and premium plans. B
 
 5. Sign out and sign in again so the new admin claim is included in the session token.
 6. In **Authentication → Sign In / Providers**, keep Email enabled and turn on **Confirm email**. In **Authentication → SMTP Settings**, configure custom SMTP (Resend is one option); Supabase's built-in sender is heavily rate-limited.
-7. In **Authentication → URL Configuration**, set the Site URL to `https://manshverse.site` and add `http://localhost:5173/**` and `https://manshverse.site/**` to Redirect URLs (also add your actual production host if it differs).
-8. In **Authentication → Providers**, enable Google and GitHub and add each provider's client ID/secret and Supabase callback URL (`https://<project-ref>.supabase.co/auth/v1/callback`). The app sends users back to `/auth/callback` after provider authentication.
+7. In **Authentication → URL Configuration**, set the Site URL to `https://www.manshverse.site` and allow these Redirect URLs: `https://www.manshverse.site/auth/callback`, `https://manshverse.site/auth/callback`, `https://manshverse.vercel.app/auth/callback`, and `http://localhost:5173/auth/callback`. Also allow `/reset-password` on each host if testing password resets there.
+8. In **Authentication → Providers**, enable Google and GitHub and add each provider's client ID/secret. In Google Cloud Console, the Web OAuth client's authorized redirect URI must be the Supabase callback (`https://<project-ref>.supabase.co/auth/v1/callback`), not the app's `/auth/callback` route. The app returns to `/auth/callback` after Supabase completes provider authentication.
 9. Set `GROQ_API_KEY` as a server-only secret in the deployment environment for `/api/chat`. The AI route requires a valid Manshverse session and checks database quota limits before calling Groq.
 
 ```sh
