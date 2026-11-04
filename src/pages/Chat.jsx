@@ -26,12 +26,9 @@ const SUPPORT_EMAIL = "manshverse@gmail.com";
 
 // ── MODELS ──────────────────────────────────────────────
 const MODELS = [
-  { id: "openrouter/free", label: "Mansh Mode", desc: "Routes each prompt to an available free model", provider: "openrouter", color: "#facc15", vision: true },
-  { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra", desc: "Long-form reasoning and research", provider: "openrouter", color: "#a78bfa", vision: false },
-  { id: "nvidia/nemotron-3.5-super-vl:free", label: "Nemotron 3.5 Super VL", desc: "Text, image, document, and video understanding", provider: "openrouter", color: "#67e8f9", vision: true },
-  { id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning", desc: "Fast general-purpose responses", provider: "openrouter", color: "#86efac", vision: false },
-  { id: "google/gemma-4-26b-a4b-it:free", label: "Gemma 4 26B A4B", desc: "Multimodal reasoning and everyday tasks", provider: "openrouter", color: "#fca5a5", vision: true },
-  { id: "cohere/north-mini-code:free", label: "North Mini Code", desc: "Code generation and software tasks", provider: "openrouter", color: "#fde68a", vision: false },
+  { id: "openai/gpt-oss-120b", usageKey: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "GPT OSS 120B", desc: "Powerful reasoning and general chat via Groq", provider: "groq", color: "#a78bfa", vision: false },
+  { id: "openai/gpt-oss-20b", usageKey: "nvidia/nemotron-3.5-lightning:free", label: "GPT OSS 20B", desc: "Fast reasoning and general chat via Groq", provider: "groq", color: "#67e8f9", vision: false },
+  { id: "qwen/qwen3.8-27b", usageKey: "google/gemma-4-26b-a4b-it:free", label: "Qwen 3.8 27B", desc: "Reasoning, coding, and multimodal chat via Groq", provider: "groq", color: "#86efac", vision: true },
 ];
 
 // ── ATMOSPHERE CONFIG ────────────────────────────────────
@@ -62,7 +59,7 @@ const COUNCIL_PERSONAS = [
     name: "The Founder",
     icon: "star",
     color: "#4ade80",
-    model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    model: "openai/gpt-oss-120b",
     prompt: "You are a Y-Combinator level founder. Respond to the question from a purely practical, first-principles, execution-focused lens. Be direct, data-driven, and brutally honest. Max 4 sentences. Start with 'As a founder:'"
   },
   {
@@ -70,7 +67,7 @@ const COUNCIL_PERSONAS = [
     name: "The Stoic",
     icon: "columns",
     color: "#a78bfa",
-    model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    model: "openai/gpt-oss-120b",
     prompt: "You are Marcus Aurelius reborn. Respond from a stoic philosophical lens — what truly matters, what is in your control, and what is the long game? Challenge emotional reasoning. Max 4 sentences. Start with 'The Stoic speaks:'"
   },
   {
@@ -78,7 +75,7 @@ const COUNCIL_PERSONAS = [
     name: "The Mathematician",
     icon: "calculator",
     color: "#67e8f9",
-    model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    model: "openai/gpt-oss-120b",
     prompt: "You are a ruthless mathematician and logician. Break the question into raw probabilities, expected values, and logical structures. Remove emotion. Find the optimal answer using pure logic. Max 4 sentences. Start with 'The Math says:'"
   },
 ];
@@ -488,8 +485,8 @@ export default function Chat() {
   const msgCountRef = useRef(0);
 
   const activePersonaCtx = useMemo(() => activeConv?.isPersona ? { prompt: activeConv.personaPrompt, contextData: activeConv.personaContextData } : null, [activeConv]);
-  const currentLimit = isCreator ? Infinity : (planLimits[plan]?.[model.id] ?? 10);
-  const currentUsed = usageToday[model.id] || 0;
+  const currentLimit = isCreator ? Infinity : (planLimits[plan]?.[model.usageKey || model.id] ?? 10);
+  const currentUsed = usageToday[model.usageKey || model.id] || 0;
   const usagePct = currentLimit === Infinity ? 0 : Math.min(100, (currentUsed / currentLimit) * 100);
   const atm = ATMOSPHERES[atmosphere] || ATMOSPHERES.default;
   const refreshUsageToday = useCallback(async () => {
@@ -633,7 +630,7 @@ useEffect(() => {
   const selectConv = async (conv) => {
     setActiveConv(conv); setError(null); setView("chat");
     const cm = MODELS.find(m => m.label === conv.model || m.id === conv.model) || MODELS[0];
-    setModel(conv.isPersona ? MODELS[2] : cm);
+    setModel(conv.isPersona ? MODELS[0] : cm);
     if (window.innerWidth <= 800) setSidebarOpen(false);
     const q = query(collection(db, "users", user.uid, "conversations", conv.id, "messages"), orderBy("createdAt", "asc"));
     const snap = await getDocs(q);
@@ -660,11 +657,11 @@ useEffect(() => {
       return `- **${field?.label || key}**: ${val}`;
     }).join("\n");
     try {
-      const newConvData = { title: `Chat with ${persona.label}`, createdAt: serverTimestamp(), model: MODELS[2].label, isPersona: true, personaId: persona.id, personaPrompt: persona.prompt, personaContextData: contextData };
+      const newConvData = { title: `Chat with ${persona.label}`, createdAt: serverTimestamp(), model: MODELS[0].label, isPersona: true, personaId: persona.id, personaPrompt: persona.prompt, personaContextData: contextData };
       const ref = await addDoc(collection(db, "users", user.uid, "conversations"), newConvData);
       const newConv = { id: ref.id, ...newConvData };
       setConversations(prev => [newConv, ...prev]);
-      setActiveConv(newConv); setModel(MODELS[2]); setMessages([]);
+      setActiveConv(newConv); setModel(MODELS[0]); setMessages([]);
       setOnboardingPersona(null); setPersonaFormData({}); setView("chat");
       if (window.innerWidth <= 800) setSidebarOpen(false);
       msgCountRef.current = 0;
@@ -730,8 +727,9 @@ useEffect(() => {
       }
     }
 
-    const effectiveLimit = isCreator ? Infinity : (latestPlanLimits[latestPlan]?.[targetModel.id] ?? 10);
-    const used = Number(latestUsage[targetModel.id] || 0);
+    const usageKey = targetModel.usageKey || targetModel.id;
+    const effectiveLimit = isCreator ? Infinity : (latestPlanLimits[latestPlan]?.[usageKey] ?? 10);
+    const used = Number(latestUsage[usageKey] || 0);
     if (!isCreator && effectiveLimit !== Infinity && used >= effectiveLimit) {
       setUpgradeReason(`Daily limit reached for ${targetModel.label}.`);
       setShowUpgrade(true);
@@ -785,7 +783,7 @@ useEffect(() => {
       try { await addDoc(collection(db, "users", user.uid, "conversations", convId, "messages"), { role: "assistant", content: reply, createdAt: serverTimestamp(), modelLabel: targetModel.label }); } catch {}
       if (!isCreator) {
         const next = used + 1;
-        setUsageToday({ ...latestUsage, [targetModel.id]: next });
+        setUsageToday({ ...latestUsage, [usageKey]: next });
       }
     } catch (err) {
       if (streamTimer !== null) clearTimeout(streamTimer);
@@ -799,7 +797,7 @@ useEffect(() => {
     if (!input.trim() || enhancing) return;
     setEnhancing(true);
     try {
-      const res = await fetch("/api/openrouter", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: "cohere/north-mini-code:free", messages: [{ role: "system", content: "Rewrite the user's prompt to be highly detailed and effective for AI. Return ONLY the rewritten prompt, nothing else." }, { role: "user", content: input }] }) });
+      const res = await fetch("/api/openrouter", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: "openai/gpt-oss-20b", messages: [{ role: "system", content: "Rewrite the user's prompt to be highly detailed and effective for AI. Return ONLY the rewritten prompt, nothing else." }, { role: "user", content: input }] }) });
       const { data } = await readPayload(res);
       const enhanced = data?.choices?.[0]?.message?.content?.trim();
       if (enhanced) setInput(enhanced);
@@ -867,7 +865,7 @@ THE MATHEMATICIAN said: ${mathReply}
 ${focus ? `ADDITIONAL USER CONTEXT AND FOCUS: ${focus}` : ""}
 
 Your job: Write a final "Council Verdict" that synthesizes the best insights from all three, resolves any contradictions, and gives the user ONE clear, actionable conclusion. ${styleInstructions} ${councilDepth === "detailed" ? "Explain the key reasoning and give a practical next step." : "Keep it concise, up to 6 sentences."} Start with "The Council Verdict:"`;
-      const synthesis = await callOpenRouterOnce("nvidia/nemotron-3-ultra-550b-a55b:free", "You are a Master Synthesizer who combines diverse expert perspectives into clear, actionable verdicts.", synthesisPrompt);
+      const synthesis = await callOpenRouterOnce("openai/gpt-oss-120b", "You are a Master Synthesizer who combines diverse expert perspectives into clear, actionable verdicts.", synthesisPrompt);
       setCouncilResults({ ...partial, synthesis });
     } catch (e) {
       setError(friendlyError(e.message));
@@ -884,8 +882,8 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
     <div className={compact ? "chat-input-wrap" : "empty-input-container"}>
       {!compact && !activeConv?.isPersona && (
         <div className="mansh-toggle">
-          <div className={`mtoggle-opt ${model.id === "openrouter/free" ? "active" : ""}`} onClick={() => setModel(MODELS[0])}><AppIcon name="sparkles" size={14}/> Mansh Mode</div>
-          <div className={`mtoggle-opt ${model.id !== "openrouter/free" ? "active" : ""}`} onClick={() => setModel(MODELS[2])}>Nemotron 3.5 Super VL</div>
+          <div className={`mtoggle-opt ${model.id === MODELS[0].id ? "active" : ""}`} onClick={() => setModel(MODELS[0])}><AppIcon name="sparkles" size={14}/> GPT OSS 120B</div>
+          <div className={`mtoggle-opt ${model.id === MODELS[2].id ? "active" : ""}`} onClick={() => setModel(MODELS[2])}>Qwen 3.8 27B</div>
         </div>
       )}
       {shadowMode && (
@@ -930,7 +928,7 @@ Your job: Write a final "Council Verdict" that synthesizes the best insights fro
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             {enhancing ? "Enhancing..." : "Enhance Prompt"}
           </button>
-          <button className="qa-chip" onClick={() => { const m = MODELS.find(m => m.id === "nvidia/nemotron-3.5-super-vl:free"); if (m) setModel(m); }}>
+          <button className="qa-chip" onClick={() => { const m = MODELS.find(m => m.id === "qwen/qwen3.8-27b"); if (m) setModel(m); }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             Analyze Image
           </button>

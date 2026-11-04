@@ -14,6 +14,11 @@ const MODEL_USAGE_KEYS = new Set([
   "google/gemma-4-26b-a4b-it:free",
   "cohere/north-mini-code:free",
 ]);
+const GROQ_MODELS = new Map([
+  ["openai/gpt-oss-120b", { model: "openai/gpt-oss-120b", usageKey: "nvidia/nemotron-3-ultra-550b-a55b:free" }],
+  ["openai/gpt-oss-20b", { model: "openai/gpt-oss-20b", usageKey: "nvidia/nemotron-3.5-lightning:free" }],
+  ["qwen/qwen3.8-27b", { model: "qwen/qwen3.8-27b", usageKey: "google/gemma-4-26b-a4b-it:free" }],
+]);
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const MAX_MESSAGES = 80;
 const MAX_TEXT_CHARS = 180_000;
@@ -65,9 +70,10 @@ export default async function handler(req) {
   let reservation = null;
   try {
     const config = supabaseConfig();
+    const groqKey = globalThis.process?.env?.GROQ_API_KEY || globalThis.process?.env?.GROQ_KEY;
     const openRouterKey = globalThis.process?.env?.OPENROUTER_API_KEY;
     if (!config.url || !config.key) return json({ error: { message: "Server auth is not configured." } }, 503);
-    if (!openRouterKey) return json({ error: { message: "Server is missing OPENROUTER_API_KEY." } }, 503);
+    if (!openRouterKey && !groqKey) return json({ error: { message: "Server is missing a model provider API key." } }, 503);
 
     const contentLength = Number(req.headers.get("content-length") || 0);
     if (contentLength > MAX_BODY_BYTES) return json({ error: { message: "Request is too large." } }, 413);
@@ -78,8 +84,12 @@ export default async function handler(req) {
     try { body = JSON.parse(rawBody); }
     catch { return json({ error: { message: "Request body must be valid JSON." } }, 400); }
     if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: { message: "Invalid request body." } }, 400);
-    const modelKey = MODEL_USAGE_KEYS.has(body.model) ? body.model : null;
+    const groqModel = typeof body.model === "string" ? GROQ_MODELS.get(body.model) : null;
+    const isGroq = Boolean(groqModel);
+    const modelKey = groqModel?.usageKey || (MODEL_USAGE_KEYS.has(body.model) ? body.model : null);
     if (!modelKey) return json({ error: { message: "This model is not available." } }, 400);
+    if (isGroq && !groqKey) return json({ error: { message: "Groq is not configured on the server." } }, 503);
+    if (!isGroq && !openRouterKey) return json({ error: { message: "OpenRouter is not configured on the server." } }, 503);
     if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > MAX_MESSAGES) {
       return json({ error: { message: `Send between 1 and ${MAX_MESSAGES} messages.` } }, 400);
     }
@@ -108,16 +118,15 @@ export default async function handler(req) {
     }
     if (!quota.admin) reservation = { config, token: auth.token, modelKey };
 
-    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const upstream = await fetch(isGroq ? "https://api.groq.com/openai/v1/chat/completions" : "https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${openRouterKey}`,
-        "HTTP-Referer": "https://manshverse.site",
-        "X-Title": "Manshverse",
+        Authorization: `Bearer ${isGroq ? groqKey : openRouterKey}`,
+        ...(isGroq ? {} : { "HTTP-Referer": "https://manshverse.site", "X-Title": "Manshverse" }),
       },
       body: JSON.stringify({
-        model: body.model,
+        model: groqModel?.model || body.model,
         messages: body.messages,
         stream: body.stream === true,
         max_tokens: Math.max(1, Math.min(Number(body.max_tokens) || 2048, 4096)),
@@ -129,7 +138,7 @@ export default async function handler(req) {
       await releaseUsage(config, auth.token, modelKey);
       reservation = null;
       const text = await upstream.text();
-      return new Response(text || JSON.stringify({ error: { message: `OpenRouter request failed (${upstream.status}).` } }), {
+      return new Response(text || JSON.stringify({ error: { message: `Model provider request failed (${upstream.status}).` } }), {
         status: upstream.status,
         headers: { "Content-Type": contentType.includes("application/json") ? contentType : "application/json", "Cache-Control": "no-store" },
       });
@@ -144,7 +153,7 @@ export default async function handler(req) {
     if (!text) {
       await releaseUsage(config, auth.token, modelKey);
       reservation = null;
-      return json({ error: { message: "OpenRouter returned an empty response." } }, 502);
+      return json({ error: { message: "The model provider returned an empty response." } }, 502);
     }
     return new Response(text, {
       status: upstream.status,
