@@ -7,18 +7,18 @@ export const PLAN_META = {
 };
 
 export const MODEL_LIMIT_FIELDS = [
-  { key: "Milkcake 2.7", short: "Milkcake", color: "#a78bfa" },
-  { key: "Astral 2.0",   short: "Astral",   color: "#67e8f9" },
-  { key: "Impulse 1.4",  short: "Impulse",  color: "#86efac" },
-  { key: "Cornea 1.0",   short: "Cornea",   color: "#fca5a5" },
-  { key: "Nova 1.0",     short: "Nova",     color: "#fde68a" },
-  { key: "Spark 1.0",    short: "Spark",    color: "#fb923c" },
+  { key: "openrouter/free", short: "Mansh Mode", color: "#facc15" },
+  { key: "nvidia/nemotron-3-ultra-550b-a55b:free", short: "Nemotron 3 Ultra", color: "#a78bfa" },
+  { key: "nvidia/nemotron-3.5-super-vl:free", short: "Nemotron 3.5 Super VL", color: "#67e8f9" },
+  { key: "nvidia/nemotron-3.5-lightning:free", short: "Nemotron 3.5 Lightning", color: "#86efac" },
+  { key: "google/gemma-4-26b-a4b-it:free", short: "Gemma 4 26B A4B", color: "#fca5a5" },
+  { key: "cohere/north-mini-code:free", short: "North Mini Code", color: "#fde68a" },
 ];
 
 export const DEFAULT_PLAN_LIMITS = {
-  free:  { "Milkcake 2.7": 3,        "Astral 2.0": 10,       "Impulse 1.4": 30,       "Cornea 1.0": 5,        "Nova 1.0": 10,       "Spark 1.0": 50       },
-  pro:   { "Milkcake 2.7": 30,       "Astral 2.0": 75,       "Impulse 1.4": 300,      "Cornea 1.0": 50,       "Nova 1.0": 75,       "Spark 1.0": 500      },
-  ultra: { "Milkcake 2.7": Infinity, "Astral 2.0": Infinity, "Impulse 1.4": Infinity, "Cornea 1.0": Infinity, "Nova 1.0": Infinity, "Spark 1.0": Infinity },
+  free:  { "openrouter/free": 3, "nvidia/nemotron-3-ultra-550b-a55b:free": 10, "nvidia/nemotron-3.5-super-vl:free": 30, "nvidia/nemotron-3.5-lightning:free": 5, "google/gemma-4-26b-a4b-it:free": 10, "cohere/north-mini-code:free": 50 },
+  pro:   { "openrouter/free": 30, "nvidia/nemotron-3-ultra-550b-a55b:free": 75, "nvidia/nemotron-3.5-super-vl:free": 300, "nvidia/nemotron-3.5-lightning:free": 50, "google/gemma-4-26b-a4b-it:free": 75, "cohere/north-mini-code:free": 500 },
+  ultra: { "openrouter/free": Infinity, "nvidia/nemotron-3-ultra-550b-a55b:free": Infinity, "nvidia/nemotron-3.5-super-vl:free": Infinity, "nvidia/nemotron-3.5-lightning:free": Infinity, "google/gemma-4-26b-a4b-it:free": Infinity, "cohere/north-mini-code:free": Infinity },
 };
 
 const UNLIMITED_VALUES = new Set(["", "inf", "infinity", "unlimited", "∞"]);

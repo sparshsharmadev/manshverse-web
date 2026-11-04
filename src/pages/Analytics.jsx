@@ -1,11 +1,11 @@
-import { useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
-import { db } from "../firebase";
+import { supabase as db } from "../supabase";
 import {
   collection, collectionGroup, doc, getDoc, getDocs,
   serverTimestamp, setDoc, deleteDoc, query, orderBy, limit
-} from "firebase/firestore";
+} from "../lib/firestore";
 import { getPlanSnapshot, getUsageDayKey, toJsDate } from "../lib/account";
 import {
   calculatePlanExpiry, DEFAULT_PLAN_LIMITS, limitInputValue,
@@ -13,8 +13,11 @@ import {
   serializePlanLimits
 } from "../lib/plans";
 import { STARS } from "../lib/stars";
+import BrandMark from "../components/BrandMark";
+import AppIcon from "../components/AppIcon";
+import "./analytics.css";
 
-const SPARSH_UID = "O3FcnaQA5tgNztbkWc2FLRnYdye2";
+
 const TODAY = getUsageDayKey();
 
 const STATUS_LABEL = { pending: "Pending", approved: "Approved", rejected: "Rejected" };
@@ -56,33 +59,24 @@ const StatCard = ({ label, value, sub, accent }) => (
   </div>
 );
 
-const MV_ICON = (
-  <svg width="12" height="12" viewBox="0 0 100 100" fill="none">
-    <line x1="50" y1="50" x2="50" y2="18" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/>
-    <line x1="50" y1="50" x2="83" y2="61" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/>
-    <line x1="50" y1="50" x2="28" y2="78" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/>
-    <circle cx="50" cy="50" r="4" fill="#fff"/>
-    <circle cx="50" cy="18" r="2.5" fill="#fff"/>
-    <circle cx="83" cy="61" r="2.5" fill="#fff"/>
-    <circle cx="28" cy="78" r="2.5" fill="#fff"/>
-  </svg>
-);
-
 export default function Analytics() {
   const { user } = useContext(AuthContext);
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const hasLoaded = useRef(false);
   const [tab, setTab] = useState("overview");
   const [toast, setToast] = useState({ msg: "", type: "success" });
 
   const [stats, setStats] = useState({
-    totalUsers: 0, totalConvs: 0, todayUsage: {}, planDist: { free: 0, pro: 0, ultra: 0 },
+    totalUsers: 0, totalConvs: 0, todayUsage: {}, planDist: { free: 0, pro: 0, ultra: 0, creator: 0 },
     activeToday: 0, paidUsers: 0, topUsers: [], recentSignups: [], expiringSoon: [],
     requests: [], pendingRequests: [], requestsByStatus: { pending: 0, approved: 0, rejected: 0 },
   });
   const [users, setUsers] = useState([]);
-  const [planLimits, setPlanLimits] = useState(DEFAULT_PLAN_LIMITS);
   const [limitDrafts, setLimitDrafts] = useState(makeDrafts(DEFAULT_PLAN_LIMITS));
   const [requestEdits, setRequestEdits] = useState({});
 
@@ -114,19 +108,29 @@ export default function Analytics() {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
 
-  const showToast = (msg, type = "success") => {
+  const showToast = useCallback((msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast({ msg: "", type: "success" }), 4000);
-  };
+  }, []);
 
-  async function loadAnalytics() {
-    setLoading(true);
+  const loadAnalytics = useCallback(async () => {
+    const firstLoad = !hasLoaded.current;
+    setLoading(firstLoad);
+    setRefreshing(!firstLoad);
+    setLoadError("");
     try {
-      const [usersSnap, settingsSnap, requestsSnap] = await Promise.all([
+      const results = await Promise.allSettled([
         getDocs(collection(db, "users")),
         getDoc(doc(db, "settings", "platform")),
         getDocs(collectionGroup(db, "planRequests")),
       ]);
+      const failedQuery = results.findIndex(result => result.status === "rejected");
+      if (failedQuery !== -1) {
+        const labels = ["Users", "Platform settings", "Plan requests"];
+        const reason = results[failedQuery].reason;
+        throw new Error(`${labels[failedQuery]} query failed: ${reason?.message || "Unknown database error"}`);
+      }
+      const [usersSnap, settingsSnap, requestsSnap] = results.map(result => result.value);
 
       const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
       const nextPlanLimits = normalizePlanLimits(settingsData.planLimits || DEFAULT_PLAN_LIMITS);
@@ -159,18 +163,18 @@ export default function Analytics() {
         return {
           id: d.id, name: data.name || data.email || "User", email: data.email || "",
           photoURL: data.photoURL || "", createdAt: toJsDate(data.createdAt),
-          plan: snapshot.plan, planExpiry: snapshot.planExpiryDate,
+          plan: snapshot.plan, isCreator: d.id === user?.uid, planExpiry: snapshot.planExpiryDate,
           isBanned: data.isBanned || false, latestRequest: requestsByUser[d.id]?.[0] || null,
         };
       });
 
       const enrichedUsers = await Promise.all(baseUsers.map(async (u) => {
         let convCount = 0, usageData = {};
-        try { convCount = (await getDocs(collection(db, "users", u.id, "conversations"))).size; } catch {}
+        try { convCount = (await getDocs(collection(db, "users", u.id, "conversations"))).size; } catch { /* Conversation counts may be unavailable for a user. */ }
         try {
           const us = await getDoc(doc(db, "users", u.id, "usage", TODAY));
           usageData = us.exists() ? us.data() : {};
-        } catch {}
+        } catch { /* Usage may not exist yet for a user. */ }
         const msgsToday = MODEL_LIMIT_FIELDS.reduce((s, f) => s + Number(usageData[f.key] || 0), 0);
         return { ...u, convCount, usageToday: usageData, msgsToday };
       }));
@@ -180,15 +184,17 @@ export default function Analytics() {
         return (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0);
       });
 
-      const todayUsage = {}, planDist = { free: 0, pro: 0, ultra: 0 };
+      const todayUsage = {}, planDist = { free: 0, pro: 0, ultra: 0, creator: 0 };
       let totalConvs = 0;
       for (const u of enrichedUsers) {
-        planDist[u.plan] = (planDist[u.plan] || 0) + 1;
+        const tier = u.isCreator ? "creator" : u.plan;
+        planDist[tier] = (planDist[tier] || 0) + 1;
         totalConvs += u.convCount;
-        for (const f of MODEL_LIMIT_FIELDS) todayUsage[f.key] = (todayUsage[f.key] || 0) + Number(u.usageToday[f.key] || 0);
+        if (!u.isCreator) {
+          for (const f of MODEL_LIMIT_FIELDS) todayUsage[f.key] = (todayUsage[f.key] || 0) + Number(u.usageToday[f.key] || 0);
+        }
       }
 
-      setPlanLimits(nextPlanLimits);
       setLimitDrafts(makeDrafts(nextPlanLimits));
       setRequestEdits(requests.reduce((acc, r) => {
         acc[r.id] = { plan: r.requestedPlan || "pro", days: String(r.durationDays || 30) };
@@ -197,23 +203,32 @@ export default function Analytics() {
       setUsers(enrichedUsers);
       setStats({
         totalUsers: enrichedUsers.length, totalConvs, todayUsage, planDist,
-        activeToday: enrichedUsers.filter(u => u.msgsToday > 0).length,
-        paidUsers: enrichedUsers.filter(u => u.plan !== "free").length,
-        topUsers: [...enrichedUsers].filter(u => u.msgsToday > 0).sort((a, b) => b.msgsToday - a.msgsToday).slice(0, 10),
+        activeToday: enrichedUsers.filter(u => !u.isCreator && u.msgsToday > 0).length,
+        paidUsers: enrichedUsers.filter(u => !u.isCreator && u.plan !== "free").length,
+        topUsers: [...enrichedUsers].filter(u => !u.isCreator && u.msgsToday > 0).sort((a, b) => b.msgsToday - a.msgsToday).slice(0, 10),
         recentSignups: [...enrichedUsers].sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0)).slice(0, 8),
-        expiringSoon: enrichedUsers.filter(u => u.plan !== "free" && u.planExpiry && daysLeft(u.planExpiry) !== null && daysLeft(u.planExpiry) <= 7)
+        expiringSoon: enrichedUsers.filter(u => !u.isCreator && u.plan !== "free" && u.planExpiry && daysLeft(u.planExpiry) !== null && daysLeft(u.planExpiry) <= 7)
           .sort((a, b) => (a.planExpiry?.getTime() || 0) - (b.planExpiry?.getTime() || 0)).slice(0, 8),
         requests, pendingRequests: requests.filter(r => r.status === "pending"),
         requestsByStatus: requests.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, { pending: 0, approved: 0, rejected: 0 }),
       });
-    } catch (err) { showToast("Failed to load dashboard data.", "error"); }
+      hasLoaded.current = true;
+      setLastUpdated(new Date());
+    } catch (error) {
+      console.error("Analytics dashboard load failed:", error);
+      setLoadError(error?.message || "The dashboard data could not be loaded.");
+      showToast("Failed to load dashboard data.", "error");
+    }
     setLoading(false);
-  }
+    setRefreshing(false);
+  }, [showToast, user?.uid]);
 
   useEffect(() => {
-    if (user?.uid !== SPARSH_UID) { navigate("/chat"); return; }
-    loadAnalytics();
-  }, [navigate, user?.uid]);
+    window.scrollTo(0, 0);
+    if (user?.app_metadata?.role !== "admin") { navigate("/chat"); return undefined; }
+    const timer = window.setTimeout(() => { void loadAnalytics(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadAnalytics, navigate, user?.app_metadata?.role]);
 
   // Chat inspector
   const handleSelectLogUser = async (uid) => {
@@ -260,9 +275,9 @@ export default function Analytics() {
         status: nextStatus, approvedPlan: nextStatus === "approved" ? edit.plan : null,
         durationDays: Number(edit.days), handledAt: serverTimestamp(), handledBy: user.uid, updatedAt: serverTimestamp(),
       }, { merge: true });
-      showToast(nextStatus === "approved" ? "✅ Plan approved and applied." : "❌ Request rejected.");
+      showToast(nextStatus === "approved" ? "Plan approved and applied." : "Request rejected.");
       await loadAnalytics();
-    } catch { showToast("⚠️ Action failed.", "error"); }
+    } catch { showToast("Action failed.", "error"); }
     setBusyId("");
   };
 
@@ -271,8 +286,8 @@ export default function Analytics() {
     setManualBusy(true);
     try {
       await applyPlanToUser(selectedUser.id, manualPlan, manualDays, "creator_manual");
-      showToast(`⚡ ${selectedUser.name} upgraded to ${manualPlan.toUpperCase()} for ${manualDays} days.`);
-    } catch { showToast("⚠️ Could not update user.", "error"); }
+      showToast(`${selectedUser.name} upgraded to ${manualPlan.toUpperCase()} for ${manualDays} days.`);
+    } catch { showToast("Could not update user.", "error"); }
     setManualBusy(false);
   };
 
@@ -282,9 +297,9 @@ export default function Analytics() {
     try {
       const newBan = !selectedUser.isBanned;
       await setDoc(doc(db, "users", selectedUser.id), { isBanned: newBan }, { merge: true });
-      showToast(newBan ? `🚫 ${selectedUser.name} banned.` : `✅ ${selectedUser.name} unbanned.`);
+      showToast(newBan ? `${selectedUser.name} banned.` : `${selectedUser.name} unbanned.`);
       setUsers(prev => prev.map(u => u.id === selectedUser.id ? { ...u, isBanned: newBan } : u));
-    } catch { showToast("⚠️ Failed to update ban status.", "error"); }
+    } catch { showToast("Failed to update ban status.", "error"); }
   };
 
   const handleDeleteUser = async () => {
@@ -292,10 +307,10 @@ export default function Analytics() {
     setDeleteConfirm(false);
     try {
       await deleteDoc(doc(db, "users", selectedUser.id));
-      showToast(`🗑️ ${selectedUser.name}'s data deleted.`);
+      showToast(`${selectedUser.name}'s data deleted.`);
       setUsers(prev => prev.filter(u => u.id !== selectedUser.id));
       setSelectedUserId("");
-    } catch { showToast("⚠️ Failed to delete. Check Firestore rules.", "error"); }
+    } catch { showToast("Failed to delete. Check database access rules.", "error"); }
   };
 
   const handleResetUsage = async () => {
@@ -303,8 +318,8 @@ export default function Analytics() {
     setResetConfirm(false);
     try {
       await setDoc(doc(db, "users", selectedUser.id, "usage", TODAY), {}, { merge: false });
-      showToast(`🔄 Usage reset for ${selectedUser.name}.`);
-    } catch { showToast("⚠️ Failed to reset usage.", "error"); }
+      showToast(`Usage reset for ${selectedUser.name}.`);
+    } catch { showToast("Failed to reset usage.", "error"); }
   };
 
   const handleSavePlatform = async () => {
@@ -317,19 +332,18 @@ export default function Analytics() {
         globalNotice: platformSettings.globalNotice,
         updatedAt: serverTimestamp(), updatedBy: user.uid,
       }, { merge: true });
-      setPlanLimits(normalized);
       setLimitDrafts(makeDrafts(normalized));
-      showToast("✅ Platform settings saved successfully.");
-    } catch { showToast("⚠️ Could not save settings.", "error"); }
+      showToast("Platform settings saved successfully.");
+    } catch { showToast("Could not save settings.", "error"); }
     setLimitsBusy(false);
   };
 
   const TABS = [
-    { id: "overview",  label: "📊 Overview" },
-    { id: "requests",  label: `💳 Requests${stats.pendingRequests.length > 0 ? ` (${stats.pendingRequests.length})` : ""}` },
-    { id: "users",     label: "👥 Users" },
-    { id: "chatlogs",  label: "🔍 Chat Inspector" },
-    { id: "platform",  label: "⚙️ Platform" },
+    { id: "overview",  label: "Overview" },
+    { id: "requests",  label: "Requests", count: stats.pendingRequests.length },
+    { id: "users",     label: "Users" },
+    { id: "chatlogs",  label: "Chat inspector" },
+    { id: "platform",  label: "Platform" },
   ];
 
   const maxUsage = Math.max(...Object.values(stats.todayUsage || {}), 1);
@@ -337,9 +351,8 @@ export default function Analytics() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body, #root { height: 100%; background: #000; font-family: 'Inter', sans-serif; }
+        html, body, #root { height: 100%; background: #000; font-family: 'Manrope', sans-serif; }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-thumb { background: #222; border-radius: 4px; }
 
@@ -363,13 +376,13 @@ export default function Analytics() {
         .an-logo { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: #ddd; flex: 1; justify-content: center; }
         .an-logo-mark { width: 28px; height: 28px; background: linear-gradient(135deg,#3d1f8a,#1a0d2e); border: 1px solid rgba(124,92,252,0.35); border-radius: 9px; display: flex; align-items: center; justify-content: center; }
         .an-badge { font-size: 9.5px; padding: 3px 10px; background: rgba(124,92,252,0.12); border: 1px solid rgba(124,92,252,0.3); border-radius: 999px; color: #c4b5fd; font-weight: 600; letter-spacing: 0.3px; }
-        .an-top-btn { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #888; cursor: pointer; padding: 9px 16px; font-size: 12.5px; font-weight: 500; transition: all 0.2s; font-family: 'Inter'; white-space: nowrap; }
+        .an-top-btn { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #888; cursor: pointer; padding: 9px 16px; font-size: 12.5px; font-weight: 500; transition: all 0.2s; font-family: 'Manrope'; white-space: nowrap; }
         .an-top-btn:hover { background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.15); }
 
         /* ── TABS BAR ── */
         .an-tab-bar { display: flex; gap: 4px; padding: 16px 24px 0; overflow-x: auto; border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(0,0,0,0.3); }
         .an-tab-bar::-webkit-scrollbar { height: 0; }
-        .an-tab { padding: 11px 20px; font-size: 13px; background: transparent; border: none; border-bottom: 2px solid transparent; color: #555; cursor: pointer; font-weight: 600; transition: all 0.2s; font-family: 'Inter'; white-space: nowrap; }
+        .an-tab { padding: 11px 20px; font-size: 13px; background: transparent; border: none; border-bottom: 2px solid transparent; color: #555; cursor: pointer; font-weight: 600; transition: all 0.2s; font-family: 'Manrope'; white-space: nowrap; }
         .an-tab:hover { color: #bbb; }
         .an-tab.active { color: #fff; border-bottom-color: #7c5cfc; }
 
@@ -440,14 +453,14 @@ export default function Analytics() {
         .an-input, .an-select {
           width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
           border-radius: 12px; padding: 13px 16px; font-size: 14px; color: #eee; outline: none;
-          font-family: 'Inter'; transition: border-color 0.2s;
+          font-family: 'Manrope'; transition: border-color 0.2s;
         }
         .an-input:focus, .an-select:focus { border-color: rgba(108,71,255,0.6); background: rgba(255,255,255,0.06); }
         .an-input::placeholder { color: #444; }
         .an-select { appearance: none; cursor: pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; }
         .an-select option { background: #111; }
 
-        .btn { border: none; border-radius: 12px; padding: 12px 20px; font-size: 13.5px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-family: 'Inter'; }
+        .btn { border: none; border-radius: 12px; padding: 12px 20px; font-size: 13.5px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-family: 'Manrope'; }
         .btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .btn.primary { background: #fff; color: #000; }
         .btn.primary:hover:not(:disabled) { background: #e8e8e8; }
@@ -462,7 +475,7 @@ export default function Analytics() {
         /* ── USER DETAIL PANEL ── */
         .udp { background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 28px; margin-top: 20px; animation: fadein 0.2s ease; }
         .udp-tabs { display: flex; gap: 4px; margin-bottom: 24px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 4px; }
-        .udp-tab { flex: 1; padding: 9px 12px; font-size: 12.5px; font-weight: 600; background: transparent; border: none; color: #555; cursor: pointer; border-radius: 7px; transition: 0.15s; font-family: 'Inter'; }
+        .udp-tab { flex: 1; padding: 9px 12px; font-size: 12.5px; font-weight: 600; background: transparent; border: none; color: #555; cursor: pointer; border-radius: 7px; transition: 0.15s; font-family: 'Manrope'; }
         .udp-tab.active { background: rgba(255,255,255,0.08); color: #fff; }
 
         /* ── REQUESTS ── */
@@ -474,7 +487,7 @@ export default function Analytics() {
         .lim-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 24px; }
         .lim-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
         .lim-row:last-child { border-bottom: none; }
-        .lim-input { width: 80px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 10px; font-size: 13.5px; color: #fff; text-align: center; outline: none; font-family: 'Inter'; font-weight: 600; transition: border-color 0.2s; }
+        .lim-input { width: 80px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 10px; font-size: 13.5px; color: #fff; text-align: center; outline: none; font-family: 'Manrope'; font-weight: 600; transition: border-color 0.2s; }
         .lim-input:focus { border-color: rgba(108,71,255,0.6); }
 
         /* ── CHAT INSPECTOR ── */
@@ -514,7 +527,7 @@ export default function Analytics() {
 
         /* ── PILL GROUP ── */
         .pill-grp { display: flex; gap: 8px; flex-wrap: wrap; }
-        .pill { padding: 9px 18px; font-size: 13px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #777; cursor: pointer; transition: 0.15s; font-weight: 600; font-family: 'Inter'; }
+        .pill { padding: 9px 18px; font-size: 13px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #777; cursor: pointer; transition: 0.15s; font-weight: 600; font-family: 'Manrope'; }
         .pill:hover { color: #ccc; border-color: rgba(255,255,255,0.14); }
         .pill.active { background: rgba(108,71,255,0.15); border-color: rgba(108,71,255,0.45); color: #c4b5fd; }
 
@@ -586,25 +599,36 @@ export default function Analytics() {
         </div>
       )}
 
-      <div className="an">
+      <div className="an editorial">
         {/* Top bar */}
         <div className="an-top">
           <button className="an-top-btn" onClick={() => navigate("/chat")}>← Chat</button>
           <div className="an-logo">
-            <div className="an-logo-mark">{MV_ICON}</div>
-            Manshverse <span className="an-badge">Creator Console</span>
+            <BrandMark className="an-logo-mark" size={28} />
+            <span className="an-wordmark">Manshverse</span><span className="an-badge">CREATOR CONSOLE</span>
           </div>
-          <button className="an-top-btn" onClick={loadAnalytics}>Refresh</button>
+          <div className="an-top-actions">
+            {lastUpdated && <span className="an-updated"><i/>Updated {lastUpdated.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}</span>}
+            <button className="an-top-btn an-refresh" onClick={loadAnalytics} disabled={loading || refreshing} aria-live="polite">
+              <svg className={refreshing ? "is-spinning" : ""} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.55-2L20 12M4 12l2.85 5a7 7 0 0 0 11.55-2"/></svg>
+              {refreshing ? "Refreshing" : "Refresh"}
+            </button>
+          </div>
         </div>
 
         {/* Tab bar */}
-        <div className="an-tab-bar">
+        <div className="an-tab-bar" role="tablist" aria-label="Analytics sections">
           {TABS.map(t => (
-            <button key={t.id} className={`an-tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
-              {t.label}
+            <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={`an-tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>
+              {t.label}{t.count > 0 && <span className="an-tab-count">{t.count}</span>}
             </button>
           ))}
         </div>
+
+        <header className="an-masthead">
+          <div className="an-masthead-copy"><div className="an-kicker"><span>MANSHVERSE / ADMINISTRATION</span><span>DAILY SNAPSHOT · {TODAY}</span></div><h1>Platform <em>report.</em></h1><p>Usage, members and operations across your workspace.</p></div>
+          <div className="an-masthead-mark"><span>MV</span><small>CREATOR<br/>ACCESS</small></div>
+        </header>
 
         {loading ? (
           <div className="an-loading">
@@ -613,6 +637,15 @@ export default function Analytics() {
             </svg>
             Fetching live platform data...
           </div>
+        ) : loadError && !hasLoaded.current ? (
+          <div className="an-load-error" role="alert">
+            <div className="an-load-error-icon"><AppIcon name="alert" size={18}/></div>
+            <div>
+              <h2>Dashboard data couldn’t load</h2>
+              <p>{loadError}</p>
+              <button className="an-top-btn" onClick={loadAnalytics}>Try again</button>
+            </div>
+          </div>
         ) : (
           <div className="an-body">
 
@@ -620,7 +653,7 @@ export default function Analytics() {
             {tab === "overview" && (
               <>
                 <div className="sc-grid">
-                  <StatCard label="Total Users" value={stats.totalUsers} sub={`${stats.paidUsers} paid`} />
+                  <StatCard label="Total Users" value={stats.totalUsers} sub={`${stats.paidUsers} paid · ${stats.planDist.creator || 0} creator`} />
                   <StatCard label="Active Today" value={stats.activeToday} sub={`of ${stats.totalUsers} users`} accent="#4ade80" />
                   <StatCard label="Messages Today" value={Object.values(stats.todayUsage).reduce((s,v) => s+v, 0)} sub="across all models" />
                   <StatCard label="MRR (est.)" value={`₹${(stats.planDist.pro*(PLAN_META.pro?.amount||199)) + (stats.planDist.ultra*(PLAN_META.ultra?.amount||1999))}`} sub="monthly recurring" accent="#a78bfa" />
@@ -633,7 +666,7 @@ export default function Analytics() {
                     {MODEL_LIMIT_FIELDS.length === 0 ? <div className="an-empty">No usage data.</div> : MODEL_LIMIT_FIELDS.map(f => (
                       <div key={f.key} className="an-item">
                         <div className="an-dot" style={{background: f.color}}/>
-                        <div className="an-name">{f.key}</div>
+                        <div className="an-name">{f.short}</div>
                         <div className="an-bar-wrap">
                           <div className="an-bar-fill" style={{width:`${((stats.todayUsage[f.key]||0)/maxUsage)*100}%`, background: f.color}}/>
                         </div>
@@ -644,11 +677,11 @@ export default function Analytics() {
 
                   <div className="an-section">
                     <div className="an-section-title">Plan distribution</div>
-                    {PLAN_ORDER.map(planId => (
+                    {[...PLAN_ORDER, "creator"].map(planId => (
                       <div key={planId} className="an-item">
-                        <div className="an-name" style={{color: PLAN_META[planId]?.color || "#888"}}>{PLAN_META[planId]?.name || planId}</div>
+                        <div className="an-name" style={{color: planId === "creator" ? "#e9a8ff" : PLAN_META[planId]?.color || "#888"}}>{planId === "creator" ? "Creator" : PLAN_META[planId]?.name || planId}</div>
                         <div className="an-bar-wrap">
-                          <div className="an-bar-fill" style={{width:`${stats.totalUsers ? ((stats.planDist[planId]||0)/stats.totalUsers)*100 : 0}%`, background: PLAN_META[planId]?.color || "#555"}}/>
+                          <div className="an-bar-fill" style={{width:`${stats.totalUsers ? ((stats.planDist[planId]||0)/stats.totalUsers)*100 : 0}%`, background: planId === "creator" ? "#c084fc" : PLAN_META[planId]?.color || "#555"}}/>
                         </div>
                         <div className="an-count">{stats.planDist[planId] || 0}</div>
                       </div>
@@ -691,7 +724,7 @@ export default function Analytics() {
                 <div className="an-section">
                   <div className="an-section-title">Pending approvals ({stats.pendingRequests.length})</div>
                   {stats.pendingRequests.length === 0 ? (
-                    <div className="an-empty">✅ All clear. No pending requests.</div>
+                    <div className="an-empty"><AppIcon name="check" size={15}/> All clear. No pending requests.</div>
                   ) : stats.pendingRequests.map(r => {
                     const edit = requestEdits[r.id] || { plan: r.requestedPlan, days: "30" };
                     return (
@@ -709,8 +742,8 @@ export default function Analytics() {
                             {PLAN_ORDER.map(p => <option key={p} value={p}>{PLAN_META[p]?.name} Plan</option>)}
                           </select>
                           <input className="an-input" style={{maxWidth:90,textAlign:"center"}} value={edit.days} onChange={e => setRequestEdits(p => ({...p,[r.id]:{...edit,days:e.target.value}}))} placeholder="Days"/>
-                          <button className="btn success" onClick={() => handleRequestDecision(r,"approved")} disabled={busyId===r.id}>{busyId===r.id?"...":"✓ Approve"}</button>
-                          <button className="btn danger"  onClick={() => handleRequestDecision(r,"rejected")} disabled={busyId===r.id}>✗ Reject</button>
+                          <button className="btn success" onClick={() => handleRequestDecision(r,"approved")} disabled={busyId===r.id}>{busyId===r.id?"...":<><AppIcon name="check" size={13}/> Approve</>}</button>
+                          <button className="btn danger"  onClick={() => handleRequestDecision(r,"rejected")} disabled={busyId===r.id}><AppIcon name="close" size={13}/> Reject</button>
                         </div>
                       </div>
                     );
@@ -741,7 +774,7 @@ export default function Analytics() {
 
             {/* ── USERS ── */}
             {tab === "users" && (
-              <div style={{display:"grid",gridTemplateColumns:"360px 1fr",gap:24}}>
+              <div className="an-user-layout" style={{display:"grid",gridTemplateColumns:"360px 1fr",gap:24}}>
                 <div style={{display:"flex",flexDirection:"column",gap:16}}>
                   <div className="an-section" style={{padding:20}}>
                     <input className="an-input" placeholder="Search by name or email..." value={userSearch} onChange={e => setUserSearch(e.target.value)} style={{marginBottom:16}}/>
@@ -749,15 +782,15 @@ export default function Analytics() {
                       {filteredUsers.length === 0 ? (
                         <div className="an-empty">No users found.</div>
                       ) : filteredUsers.map(u => (
-                        <div key={u.id} className={`an-urow ${selectedUserId===u.id?"sel":""}`} onClick={() => { setSelectedUserId(u.id); setUserDetailTab("plan"); }}>
+                        <button type="button" key={u.id} className={`an-urow ${selectedUserId===u.id?"sel":""}`} aria-pressed={selectedUserId===u.id} onClick={() => { setSelectedUserId(u.id); setUserDetailTab("plan"); }}>
                           <div className="an-av">{u.photoURL ? <img src={u.photoURL} alt=""/> : (u.name?.[0]||"?").toUpperCase()}</div>
                           <div className="an-uinfo">
                             <div className="an-uname">{u.name}</div>
                             <div className="an-uemail">{u.email}</div>
                             <div className="an-umeta">{u.convCount} convs · {u.msgsToday} msgs today</div>
                           </div>
-                          <span className={`chip ${u.isBanned?"banned":u.plan}`}>{u.isBanned?"BANNED":u.plan.toUpperCase()}</span>
-                        </div>
+                          <span className={`chip ${u.isBanned?"banned":u.isCreator?"creator":u.plan}`}>{u.isBanned?"BANNED":u.isCreator?"CREATOR":u.plan.toUpperCase()}</span>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -768,7 +801,7 @@ export default function Analytics() {
                   {!selectedUser ? (
                     <div className="an-section" style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center"}}>
                       <div style={{textAlign:"center",color:"#444"}}>
-                        <div style={{fontSize:40,marginBottom:12}}>👈</div>
+                        <AppIcon className="an-empty-icon" name="pointer" size={32}/>
                         <div style={{fontSize:15,fontWeight:600}}>Select a user to manage</div>
                         <div style={{fontSize:13,marginTop:6}}>{filteredUsers.length} users total</div>
                       </div>
@@ -786,8 +819,8 @@ export default function Analytics() {
                           <div style={{fontSize:11,color:"#444",marginTop:4, fontFamily:"monospace"}}>{selectedUser.id.slice(0,20)}...</div>
                         </div>
                         <div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>
-                          <span className={`chip ${selectedUser.isBanned?"banned":selectedUser.plan}`}>
-                            {selectedUser.isBanned?"BANNED":selectedUser.plan.toUpperCase()}
+                          <span className={`chip ${selectedUser.isBanned?"banned":selectedUser.isCreator?"creator":selectedUser.plan}`}>
+                            {selectedUser.isBanned?"BANNED":selectedUser.isCreator?"CREATOR":selectedUser.plan.toUpperCase()}
                           </span>
                           {selectedUser.planExpiry && !selectedUser.isBanned && (
                             <span style={{fontSize:"11px",color:"#555"}}>Expires {formatDate(selectedUser.planExpiry)}</span>
@@ -851,7 +884,7 @@ export default function Analytics() {
                           {MODEL_LIMIT_FIELDS.map(f => (
                             <div key={f.key} className="an-item">
                               <div className="an-dot" style={{background:f.color}}/>
-                              <div className="an-name">{f.key}</div>
+                              <div className="an-name">{f.short}</div>
                               <div className="an-count">{selectedUser.usageToday?.[f.key] || 0}</div>
                             </div>
                           ))}
@@ -909,11 +942,11 @@ export default function Analytics() {
                     </div>
                     <div className="ci-body">
                       {filteredLogUsers.map(u => (
-                        <div key={u.id} className={`ci-item ${logSelectedUserId===u.id?"active":""}`} onClick={() => handleSelectLogUser(u.id)}>
+                        <button type="button" key={u.id} className={`ci-item ${logSelectedUserId===u.id?"active":""}`} onClick={() => handleSelectLogUser(u.id)}>
                           <div className="ci-title">{u.name}</div>
                           <div className="ci-sub">{u.email}</div>
                           <div style={{fontSize:"10px",color:"#666",marginTop:5,fontWeight:500}}>{u.msgsToday} msgs today · {u.convCount} convs</div>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -925,11 +958,11 @@ export default function Analytics() {
                         : logLoading && !logConvs.length ? <div className="an-empty">Loading...</div>
                         : logConvs.length === 0 ? <div className="an-empty">No conversations.</div>
                         : logConvs.map(c => (
-                          <div key={c.id} className={`ci-item ${logSelectedConvId===c.id?"active":""}`} onClick={() => handleSelectLogConv(c.id)}>
+                          <button type="button" key={c.id} className={`ci-item ${logSelectedConvId===c.id?"active":""}`} onClick={() => handleSelectLogConv(c.id)}>
                             <div className="ci-title">{c.title||"Untitled"}</div>
                             <div className="ci-sub" style={{color:c.isPersona?"#a78bfa":"#666"}}>{c.model}{c.isPersona?" · Persona":""}</div>
                             <div style={{fontSize:"10px",color:"#555",marginTop:5}}>{formatDateTime(c.createdAt)}</div>
-                          </div>
+                          </button>
                         ))
                       }
                     </div>
@@ -959,7 +992,7 @@ export default function Analytics() {
 
             {/* ── PLATFORM SETTINGS ── */}
             {tab === "platform" && (
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:24}}>
+              <div className="an-platform-layout" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:24}}>
                 <div className="an-section">
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
                     <div className="an-section-title" style={{marginBottom:0}}>Global AI Limits</div>
@@ -979,7 +1012,7 @@ export default function Analytics() {
                         {MODEL_LIMIT_FIELDS.map(f => (
                           <div key={f.key} className="lim-row">
                             <div className="an-dot" style={{background:f.color}}/>
-                            <div className="an-name" title={f.key} style={{fontSize:12}}>{f.key}</div>
+                            <div className="an-name" title={f.key} style={{fontSize:12}}>{f.short}</div>
                             <input className="lim-input" value={limitDrafts[planId]?.[f.key]||""} onChange={e => setLimitDrafts(c => ({...c,[planId]:{...c[planId],[f.key]:e.target.value}}))} placeholder={planId==="ultra"?"∞":String(DEFAULT_PLAN_LIMITS[planId]?.[f.key]||0)}/>
                           </div>
                         ))}
@@ -1007,19 +1040,19 @@ export default function Analytics() {
                           <div className="toggle-label">Maintenance Mode</div>
                           <div className="toggle-sub">Blocks all non-creator users from the platform</div>
                         </div>
-                        <div className={`toggle-switch ${platformSettings.maintenanceMode?"on":""}`} onClick={() => setPlatformSettings(p => ({...p,maintenanceMode:!p.maintenanceMode}))}>
+                        <button type="button" className={`toggle-switch ${platformSettings.maintenanceMode?"on":""}`} role="switch" aria-checked={platformSettings.maintenanceMode} aria-label="Maintenance mode" onClick={() => setPlatformSettings(p => ({...p,maintenanceMode:!p.maintenanceMode}))}>
                           <div className="toggle-knob"/>
-                        </div>
+                        </button>
                       </div>
                       {platformSettings.maintenanceMode && (
                         <div style={{padding:"12px 16px",background:"rgba(239,68,68,0.06)",border:"1px solid rgba(239,68,68,0.2)",borderRadius:10,fontSize:13,color:"#fca5a5"}}>
-                          ⚠️ Maintenance mode is currently <strong>ON</strong>. All non-creator users are locked out.
+                          <AppIcon name="alert" size={15}/> Maintenance mode is currently <strong>ON</strong>. All non-creator users are locked out.
                         </div>
                       )}
                     </div>
 
                     <button className="btn brand w100" onClick={handleSavePlatform} disabled={limitsBusy} style={{padding:16}}>
-                      {limitsBusy ? "Saving..." : "💾 Save All Platform Settings"}
+                      {limitsBusy ? "Saving..." : <><AppIcon name="save" size={14}/> Save All Platform Settings</>}
                     </button>
                   </div>
 
@@ -1032,7 +1065,7 @@ export default function Analytics() {
                           <div className="an-uname">{u.name}</div>
                           <div className="an-uemail">{formatDate(u.createdAt,{day:"numeric",month:"short",year:"numeric"})}</div>
                         </div>
-                        <span className={`chip ${u.plan}`}>{u.plan.toUpperCase()}</span>
+                        <span className={`chip ${u.isCreator?"creator":u.plan}`}>{u.isCreator?"CREATOR":u.plan.toUpperCase()}</span>
                       </div>
                     ))}
                   </div>

@@ -1,4 +1,4 @@
-export const STARS = Array.from({length: 80}).map((_, i) => ({
+export const STARS = Array.from({length: 24}).map((_, i) => ({
   id: i, 
   left: `${Math.random() * 100}%`, 
   top: `${Math.random() * 100}%`,

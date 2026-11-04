@@ -1,17 +1,21 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { useContext, useEffect, useState } from "react";
 import { AuthContext } from "./context/AuthContext";
-import { db, auth } from "./firebase";
-import { doc, onSnapshot } from "firebase/firestore";
-import { signOut } from "firebase/auth";
+import { supabase } from "./supabase";
+import { auth } from "./lib/supabaseAuth";
+import { doc, onSnapshot } from "./lib/firestore";
+import { signOut } from "./lib/supabaseAuth";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import Home from "./pages/Home";
+import { AuthCallback, ForgotPassword, Onboarding, ResetPassword } from "./pages/AccountFlows";
 import Chat from "./pages/Chat";
 import Profile from "./pages/Profile";
 import Analytics from "./pages/Analytics";
 import { STARS } from "./lib/stars";
+import BrandMark from "./components/BrandMark";
 
-const SPARSH_UID = "O3FcnaQA5tgNztbkWc2FLRnYdye2";
+
 
 // ── STARFIELD BACKGROUND ─────────────────────────────────
 const StarsBg = () => (
@@ -34,7 +38,7 @@ const StarsBg = () => (
 
 // ── FULL-SCREEN LAYOUT SHELL ─────────────────────────────
 const LayoutWrap = ({ children }) => (
-  <div style={{ background: "#000", minHeight: "100vh", position: "relative", fontFamily: "'Inter', sans-serif" }}>
+  <div style={{ background: "#000", minHeight: "100vh", position: "relative", fontFamily: "'Manrope', sans-serif" }}>
     <StarsBg />
     <div style={{ position: "relative", zIndex: 1 }}>{children}</div>
   </div>
@@ -44,7 +48,6 @@ const LayoutWrap = ({ children }) => (
 const LoadingScreen = () => (
   <LayoutWrap>
     <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
       @keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }
       @keyframes spin  { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
     `}</style>
@@ -52,24 +55,7 @@ const LoadingScreen = () => (
       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
       height: "100vh", gap: 20,
     }}>
-      <div style={{
-        width: 48, height: 48,
-        background: "linear-gradient(135deg, #3d1f8a, #1a0d2e)",
-        border: "1px solid rgba(124,92,252,0.35)",
-        borderRadius: 14,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        boxShadow: "0 0 24px rgba(124,92,252,0.2)",
-      }}>
-        <svg width="20" height="20" viewBox="0 0 100 100" fill="none">
-          <line x1="50" y1="50" x2="50" y2="18" stroke="#fff" strokeWidth="2" strokeLinecap="round"/>
-          <line x1="50" y1="50" x2="83" y2="61" stroke="#fff" strokeWidth="2" strokeLinecap="round"/>
-          <line x1="50" y1="50" x2="28" y2="78" stroke="#fff" strokeWidth="2" strokeLinecap="round"/>
-          <circle cx="50" cy="50" r="4.5" fill="#fff"/>
-          <circle cx="50" cy="18" r="3" fill="#fff"/>
-          <circle cx="83" cy="61" r="3" fill="#fff"/>
-          <circle cx="28" cy="78" r="3" fill="#fff"/>
-        </svg>
-      </div>
+      <BrandMark size={48}/>
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2.5" style={{animation:"spin 1s linear infinite"}}>
         <path d="M21 12a9 9 0 1 1-6.219-8.56" stroke="rgba(124,92,252,0.8)"/>
         <path d="M21 12a9 9 0 0 0-9-9"/>
@@ -109,7 +95,7 @@ const MaintenanceScreen = ({ notice }) => (
         style={{
           background: "rgba(255,255,255,0.06)", color: "#bbb", border: "1px solid rgba(255,255,255,0.1)",
           padding: "12px 28px", borderRadius: 12, fontWeight: 600, cursor: "pointer", fontSize: 14,
-          fontFamily: "Inter", transition: "all 0.2s",
+          fontFamily: "Manrope", transition: "all 0.2s",
         }}
         onMouseEnter={e => { e.target.style.background = "rgba(255,255,255,0.1)"; e.target.style.color = "#fff"; }}
         onMouseLeave={e => { e.target.style.background = "rgba(255,255,255,0.06)"; e.target.style.color = "#bbb"; }}
@@ -121,8 +107,9 @@ const MaintenanceScreen = ({ notice }) => (
 );
 
 // ── BAN SCREEN ───────────────────────────────────────────
-const BannedScreen = () => (
-  <LayoutWrap>
+const BannedScreen = () => {
+  const navigate = useNavigate();
+  return <LayoutWrap>
     <div style={{
       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
       height: "100vh", padding: 24, textAlign: "center", color: "#fff",
@@ -143,39 +130,52 @@ const BannedScreen = () => (
         Your account has been suspended for violating Manshverse's terms of service.
       </p>
       <button
-        onClick={() => signOut(auth)}
+        onClick={async () => { await signOut(auth); navigate("/", { replace: true }); }}
         style={{
           background: "transparent", color: "#666", border: "1px solid rgba(255,255,255,0.1)",
-          padding: "10px 24px", borderRadius: 10, cursor: "pointer", fontFamily: "Inter",
+          padding: "10px 24px", borderRadius: 10, cursor: "pointer", fontFamily: "Manrope",
           fontSize: 13, fontWeight: 500,
         }}
       >
         Sign Out
       </button>
     </div>
-  </LayoutWrap>
-);
+  </LayoutWrap>;
+};
+
+const ProtectedRoute = ({ user, dbUser, children }) => {
+  // If a session ends while a protected page is mounted, make the public
+  // landing page the final destination instead of racing a login redirect.
+  if (!user) return <Navigate to="/" replace />;
+  if (dbUser?.isBanned) return <BannedScreen />;
+
+  if (user.app_metadata?.role !== "admin" && user.emailVerified !== true) {
+    // Sign out first so /login does not immediately redirect back to /chat.
+    signOut(auth);
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+};
 
 // ── APP ──────────────────────────────────────────────────
 function App() {
   const { user } = useContext(AuthContext);
-  const [dbUser, setDbUser] = useState(null);
+  const [dbUserState, setDbUserState] = useState({ uid: null, data: null });
+  const dbUser = dbUserState.uid === user?.uid ? dbUserState.data : null;
   const [platformSettings, setPlatformSettings] = useState({ maintenanceMode: false, globalNotice: "" });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubSettings = onSnapshot(doc(db, "settings", "platform"), (snap) => {
+    const unsubSettings = onSnapshot(doc(supabase, "settings", "platform"), (snap) => {
       if (snap.exists()) setPlatformSettings(snap.data());
     });
 
     let unsubUser = () => {};
     if (user?.uid) {
-      unsubUser = onSnapshot(doc(db, "users", user.uid), (snap) => {
-        if (snap.exists()) setDbUser(snap.data());
-        else setDbUser(null);
+      unsubUser = onSnapshot(doc(supabase, "users", user.uid), (snap) => {
+        setDbUserState({ uid: user.uid, data: snap.exists() ? snap.data() : null });
       });
-    } else {
-      setDbUser(null);
     }
 
     const timer = setTimeout(() => setLoading(false), 800);
@@ -184,65 +184,38 @@ function App() {
 
   if (loading) return <LoadingScreen />;
 
-  if (platformSettings.maintenanceMode && user?.uid !== SPARSH_UID) {
+  if (platformSettings.maintenanceMode && user?.app_metadata?.role !== "admin") {
     return <MaintenanceScreen notice={platformSettings.globalNotice} />;
   }
-
-  // ── HELPER: is this user considered "fully authenticated"? ──
-  // A user is fully authed if:
-  // - They are the creator (bypass everything)
-  // - They used phone auth (no email to verify)
-  // - They used email AND have verified it
-  const isFullyAuthed = (u) => {
-    if (!u) return false;
-    if (u.uid === SPARSH_UID) return true;
-    const isPhoneUser = u.providerData?.[0]?.providerId === "phone";
-    if (isPhoneUser) return true;
-    return u.emailVerified === true;
-  };
-
-  // ── PROTECTED ROUTE ─────────────────────────────────────
-  const ProtectedRoute = ({ children }) => {
-    if (!user) return <Navigate to="/login" replace />;
-    if (dbUser?.isBanned) return <BannedScreen />;
-
-    if (!isFullyAuthed(user)) {
-      // FIX: sign out first to kill the user session,
-      // so /login route doesn't immediately redirect back to /chat
-      signOut(auth);
-      return <Navigate to="/login" replace />;
-    }
-
-    return children;
-  };
 
   return (
     <BrowserRouter>
       <Routes>
-        {/* Root redirect */}
-        <Route
-          path="/"
-          element={<Navigate to={isFullyAuthed(user) ? "/chat" : "/login"} replace />}
-        />
+        {/* Public front door: visitors and signed-in users both land here. */}
+        <Route path="/" element={<Home user={user} />} />
 
         {/* Auth routes — FIX: unverified users must NOT be bounced away from login/register */}
         <Route
           path="/login"
-          element={isFullyAuthed(user) ? <Navigate to="/chat" replace /> : <Login />}
+          element={user ? <Navigate to="/chat" replace /> : <Login />}
         />
         <Route
           path="/register"
-          element={isFullyAuthed(user) ? <Navigate to="/chat" replace /> : <Register />}
+          element={user ? <Navigate to="/chat" replace /> : <Register />}
         />
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/onboarding" element={user ? <Onboarding /> : <Navigate to="/login" replace />} />
 
         {/* Protected routes */}
-        <Route path="/chat"    element={<ProtectedRoute><Chat /></ProtectedRoute>} />
-        <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/chat"    element={<ProtectedRoute user={user} dbUser={dbUser}><Chat /></ProtectedRoute>} />
+        <Route path="/profile" element={<ProtectedRoute user={user} dbUser={dbUser}><Profile /></ProtectedRoute>} />
 
         {/* Creator-only route */}
         <Route
           path="/analytics"
-          element={user?.uid === SPARSH_UID ? <Analytics /> : <Navigate to="/chat" replace />}
+          element={user?.app_metadata?.role === "admin" ? <Analytics /> : <Navigate to="/chat" replace />}
         />
 
         {/* Catch-all */}

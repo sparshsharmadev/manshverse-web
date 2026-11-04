@@ -1,21 +1,33 @@
-<<<<<<< HEAD
-# React + Vite
+# Manshverse
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+AI chat platform with multiple models, personas, analytics, and premium plans. Built with React, Vite, Supabase Auth/Postgres, and OpenRouter.
 
-Currently, two official plugins are available:
+## Fresh Supabase setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Create a new Supabase project.
+2. Copy `.env.example` to `.env` and fill in the project URL and anon/publishable key from **Project Settings → API**.
+3. Run every SQL file in `supabase/migrations` in timestamp order in the Supabase SQL Editor. This creates the initial schema and then applies the backend security and quota hardening.
+4. Create the first account in Manshverse. In the SQL Editor, promote that account to admin by replacing the email below:
 
-## React Compiler
+   ```sql
+   update auth.users
+   set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb
+   where email = 'YOUR_ADMIN_EMAIL';
+   ```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+5. Sign out and sign in again so the new admin claim is included in the session token.
+6. In **Authentication → Sign In / Providers**, keep Email enabled and turn on **Confirm email**. In **Authentication → SMTP Settings**, configure custom SMTP (Resend is one option); Supabase's built-in sender is heavily rate-limited.
+7. In **Authentication → URL Configuration**, set the Site URL to `https://manshverse.site` and add `http://localhost:5173/**` and `https://manshverse.site/**` to Redirect URLs (also add your actual production host if it differs).
+8. In **Authentication → Providers**, enable Google and GitHub and add each provider's client ID/secret and Supabase callback URL (`https://<project-ref>.supabase.co/auth/v1/callback`). The app sends users back to `/auth/callback` after provider authentication.
+9. Set `OPENROUTER_API_KEY` as a server-only secret in the deployment environment for `/api/openrouter`. The AI route requires a valid Manshverse session and checks database quota limits before calling OpenRouter.
 
-## Expanding the ESLint configuration
+```sh
+npm install
+npm run dev
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
-=======
-# manshverseai
-AI chat platform with multiple models, personas, analytics, and premium plans. Built with React + Vite, Firebase, and Groq API.
->>>>>>> dcb111eedfc95e486931cf3da29a74555c0154a8
+This is an empty-start schema. No Firebase records or accounts are copied or deleted. The old Firebase project can remain as an archive; the app no longer imports or depends on Firebase.
+
+## Deployment environment
+
+Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `OPENROUTER_API_KEY` in the deployment provider. Keep `OPENROUTER_API_KEY` server-only; never add a `VITE_` prefix. The server routes use the Supabase URL and anon key to verify user sessions; the anon key is safe to expose when Row Level Security is enabled. Only the Supabase anon/publishable key belongs in the browser; never expose a service-role key.

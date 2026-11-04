@@ -1,0 +1,47 @@
+const paths = {
+  sparkles: <><path d="m12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4L12 3Z"/><path d="m19 14 .8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14ZM5 3l.6 1.8L7 5.5l-1.4.7L5 8l-.6-1.8L3 5.5l1.4-.7L5 3Z"/></>,
+  mail: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></>,
+  check: <path d="m5 12 4 4L19 6"/>,
+  close: <path d="m6 6 12 12M18 6 6 18"/>,
+  alert: <><path d="M12 3 2.8 19h18.4L12 3Z"/><path d="M12 9v4m0 3h.01"/></>,
+  ban: <><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></>,
+  trash: <><path d="M4 7h16M10 11v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"/></>,
+  refresh: <><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9a7 7 0 0 1 12-2L20 12M4 12l2.5 5a7 7 0 0 0 12-2"/></>,
+  save: <><path d="M5 3h12l4 4v14H3V3h2Z"/><path d="M7 3v6h10V3M7 21v-8h10v8"/></>,
+  pointer: <><path d="m5 3 14 10-7 1-3 7L5 3Z"/></>,
+  shield: <><path d="M12 3 20 6v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3Z"/><path d="m9 12 2 2 4-4"/></>,
+  bolt: <path d="m13 2-9 12h7l-1 8 10-13h-7l1-7Z"/>,
+  columns: <><path d="M4 21h16M5 8h14M7 8v13m5-13v13m5-13v13M3 8l9-5 9 5"/></>,
+  calculator: <><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8v3H8zM8 14h.01M12 14h.01M16 14h.01M8 17h.01M12 17h.01M16 17h.01"/></>,
+  medical: <><path d="M8 3v5a4 4 0 0 0 8 0V3M6 3h4m4 0h4M12 12v9m-4-4h8"/></>,
+  code: <><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-3-11-2 14"/></>,
+  dumbbell: <><path d="M3 9v6m4-9v12m10-12v12m4-9v6M7 12h10M1 10v4m22-4v4"/></>,
+  scales: <><path d="M12 3v18M5 6h14M8 6l-4 8h8L8 6Zm8 0-4 8h8l-4-8ZM5 21h14"/></>,
+  chef: <><path d="M6 11a4 4 0 1 1 1-7 5 5 0 0 1 10 0 4 4 0 1 1 1 7v9H6v-9Zm0 4h12"/></>,
+  chart: <><path d="M4 20V4m0 16h17M8 16l4-5 3 2 5-7"/><path d="M16 6h4v4"/></>,
+  heart: <path d="M20.8 8.8c0 5.2-8.8 10.2-8.8 10.2S3.2 14 3.2 8.8A4.8 4.8 0 0 1 12 6a4.8 4.8 0 0 1 8.8 2.8Z"/>,
+  wrench: <><path d="M14 6a5 5 0 0 0-6 6l-5 5a2 2 0 0 0 3 3l5-5a5 5 0 0 0 6-6l-3 3-3-3 3-3Z"/></>,
+  book: <><path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4Z"/><path d="M8 20V8a4 4 0 0 1 4-4m-4 9h9"/></>,
+  leaf: <><path d="M20 4C10 4 5 7 5 14a6 6 0 0 0 6 6c7 0 9-7 9-16Z"/><path d="M4 21c3-5 7-8 12-11"/></>,
+  wine: <><path d="M7 3h10v5a5 5 0 0 1-10 0V3Zm5 10v8m-4 0h8M7 7h10"/></>,
+  mask: <><path d="M4 5c5-2 11-2 16 0v7c0 5-4 8-8 9-4-1-8-4-8-9V5Z"/><path d="M7 11h3m4 0h3m-7 4h4"/></>,
+  flask: <><path d="M9 3h6m-5 0v7l-6 9a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3l-6-9V3M7 16h10"/></>,
+  search: <><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></>,
+  atom: <><circle cx="12" cy="12" r="2"/><ellipse cx="12" cy="12" rx="10" ry="4.5"/><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(60 12 12)"/></>,
+  star: <path d="m12 3 2.5 5.2 5.8.8-4.2 4.1 1 5.8-5.1-2.7-5.1 2.7 1-5.8-4.2-4.1 5.8-.8L12 3Z"/>,
+  council: <><path d="m5 4 13 16M19 4 6 20M3 3l4 1-1 4M21 3l-4 1 1 4M3 21l4-1-1-4m15 5-4-1 1-4"/></>,
+  image: <><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></>,
+  eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></>,
+};
+
+const personaIcons = {
+  founder: "star", stoic: "columns", mathematician: "calculator", doctor: "medical", dev: "code",
+  gym: "dumbbell", lawyer: "scales", chef: "chef", finance: "chart", therapist: "heart",
+  mechanic: "wrench", electrician: "bolt", professor: "book", data: "chart", sherlock: "search",
+  ironman: "shield", hermione: "book", yoda: "leaf", tyrion: "wine", hannibal: "mask", spock: "atom", walter: "flask",
+};
+
+export default function AppIcon({ name = "star", size = 16, className = "", strokeWidth = 1.8, ...props }) {
+  const iconName = personaIcons[name] || name;
+  return <svg className={`mv-icon ${className}`.trim()} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" {...props}>{paths[iconName] || paths.star}</svg>;
+}

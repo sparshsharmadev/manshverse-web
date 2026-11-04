@@ -1,35 +1,48 @@
-import { useState, useContext, useRef } from "react";
+import { useState, useContext, useRef, useEffect } from "react";
 import { AuthContext } from "../context/AuthContext";
-import { auth, db } from "../firebase";
-import { updateProfile, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { supabase } from "../supabase";
+import { auth } from "../lib/supabaseAuth";
+import { updateProfile, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential, sendEmailVerification } from "../lib/supabaseAuth";
+import { doc, setDoc } from "../lib/firestore";
 import { useNavigate } from "react-router-dom";
-import { STARS } from "../lib/stars";
+import BrandMark from "../components/BrandMark";
+import AppIcon from "../components/AppIcon";
+import "./profile.css";
 
 const CLOUD_NAME = "ddmuer2zp";
 const UPLOAD_PRESET = "manshverse_uploads";
-const SPARSH_UID = "O3FcnaQA5tgNztbkWc2FLRnYdye2";
+const PHONE_COUNTRIES = [
+  ["IN", "India", "+91", 10, 10], ["US", "United States", "+1", 10, 10], ["CA", "Canada", "+1", 10, 10],
+  ["GB", "United Kingdom", "+44", 10, 10], ["AU", "Australia", "+61", 9, 9], ["NZ", "New Zealand", "+64", 8, 10],
+  ["PK", "Pakistan", "+92", 10, 10], ["BD", "Bangladesh", "+880", 10, 10], ["LK", "Sri Lanka", "+94", 9, 9], ["NP", "Nepal", "+977", 10, 10],
+  ["AE", "United Arab Emirates", "+971", 9, 9], ["SA", "Saudi Arabia", "+966", 9, 9], ["QA", "Qatar", "+974", 8, 8], ["KW", "Kuwait", "+965", 8, 8],
+  ["SG", "Singapore", "+65", 8, 8], ["MY", "Malaysia", "+60", 9, 10], ["ID", "Indonesia", "+62", 9, 12], ["PH", "Philippines", "+63", 10, 10], ["TH", "Thailand", "+66", 9, 9], ["VN", "Vietnam", "+84", 9, 10],
+  ["JP", "Japan", "+81", 10, 10], ["KR", "South Korea", "+82", 9, 10], ["CN", "China", "+86", 11, 11], ["HK", "Hong Kong", "+852", 8, 8], ["TW", "Taiwan", "+886", 9, 9],
+  ["DE", "Germany", "+49", 7, 11], ["FR", "France", "+33", 9, 9], ["IT", "Italy", "+39", 9, 10], ["ES", "Spain", "+34", 9, 9], ["PT", "Portugal", "+351", 9, 9],
+  ["NL", "Netherlands", "+31", 9, 9], ["BE", "Belgium", "+32", 8, 9], ["CH", "Switzerland", "+41", 9, 9], ["AT", "Austria", "+43", 7, 13], ["SE", "Sweden", "+46", 7, 10],
+  ["NO", "Norway", "+47", 8, 8], ["DK", "Denmark", "+45", 8, 8], ["FI", "Finland", "+358", 7, 10], ["IE", "Ireland", "+353", 7, 9], ["PL", "Poland", "+48", 9, 9],
+  ["GR", "Greece", "+30", 10, 10], ["TR", "Turkey", "+90", 10, 10], ["UA", "Ukraine", "+380", 9, 9], ["RU", "Russia", "+7", 10, 10], ["IL", "Israel", "+972", 9, 9],
+  ["BR", "Brazil", "+55", 10, 11], ["MX", "Mexico", "+52", 10, 10], ["AR", "Argentina", "+54", 10, 10], ["CL", "Chile", "+56", 9, 9], ["CO", "Colombia", "+57", 10, 10],
+  ["ZA", "South Africa", "+27", 9, 9], ["NG", "Nigeria", "+234", 10, 10], ["KE", "Kenya", "+254", 9, 9], ["EG", "Egypt", "+20", 10, 10], ["GH", "Ghana", "+233", 9, 9],
+].map(([id, name, dial, min, max]) => ({ id, name, dial, min, max }));
 
-const MV_LOGO = (
-  <svg width="14" height="14" viewBox="0 0 100 100" fill="none">
-    <line x1="50" y1="50" x2="50" y2="18" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/>
-    <line x1="50" y1="50" x2="83" y2="61" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/>
-    <line x1="50" y1="50" x2="28" y2="78" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/>
-    <circle cx="50" cy="50" r="4" fill="#fff"/>
-    <circle cx="50" cy="18" r="2.5" fill="#fff"/>
-    <circle cx="83" cy="61" r="2.5" fill="#fff"/>
-    <circle cx="28" cy="78" r="2.5" fill="#fff"/>
-  </svg>
-);
 
 export default function Profile() {
   const { user } = useContext(AuthContext);
   const navigate = useNavigate();
   const imgRef = useRef(null);
-  const isCreator = user?.uid === SPARSH_UID;
-  const isGoogle = user?.providerData?.[0]?.providerId === "google.com";
+  const isCreator = user?.app_metadata?.role === "admin";
+  const isGoogle = user?.app_metadata?.provider === "google";
 
   const [name, setName] = useState(user?.displayName || "");
+  const [phone, setPhone] = useState("");
+  const [phoneCountry, setPhoneCountry] = useState("IN");
+  const [savedPhone, setSavedPhone] = useState("");
+  const [loadingPhone, setLoadingPhone] = useState(true);
+  const [phoneLoadError, setPhoneLoadError] = useState(false);
+  const [phoneError, setPhoneError] = useState("");
+  const [savingPhone, setSavingPhone] = useState(false);
+  const [sendingVerification, setSendingVerification] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [photoURL, setPhotoURL] = useState(user?.photoURL || "");
@@ -38,6 +51,31 @@ export default function Profile() {
   const [changingPass, setChangingPass] = useState(false);
   const [signOutConfirm, setSignOutConfirm] = useState(false);
 
+  useEffect(() => {
+    if (!user?.uid) return undefined;
+    let active = true;
+    const loadPhone = async () => {
+      try {
+        const { data, error } = await supabase.from("profiles").select("data").eq("id", user.uid).maybeSingle();
+        if (error) throw error;
+        if (!active) return;
+        const value = data?.data?.phone || "";
+        const storedCountry = PHONE_COUNTRIES.find(country => country.id === data?.data?.phoneCountry);
+        const matchedCountry = storedCountry || [...PHONE_COUNTRIES].sort((a, b) => b.dial.length - a.dial.length).find(country => value.startsWith(country.dial));
+        const localNumber = matchedCountry && value.startsWith(matchedCountry.dial) ? value.slice(matchedCountry.dial.length) : value.replace(/\D/g, "");
+        setPhoneCountry(matchedCountry?.id || "IN");
+        setPhone(localNumber.replace(/\D/g, ""));
+        setSavedPhone(value);
+      } catch {
+        if (active) setPhoneLoadError(true);
+      } finally {
+        if (active) setLoadingPhone(false);
+      }
+    };
+    loadPhone();
+    return () => { active = false; };
+  }, [user?.uid]);
+
   // Toast
   const [toast, setToast] = useState({ msg: "", type: "success" });
   const showToast = (msg, type = "success") => {
@@ -45,13 +83,72 @@ export default function Profile() {
     setTimeout(() => setToast({ msg: "", type: "success" }), 3500);
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      navigate("/", { replace: true });
+    } catch {
+      showToast("Could not sign out. Please try again.", "error");
+    }
+  };
+
+  const savePhone = async () => {
+    const country = PHONE_COUNTRIES.find(option => option.id === phoneCountry) || PHONE_COUNTRIES[0];
+    const localNumber = phone.trim();
+    if (localNumber && (localNumber.length < country.min || localNumber.length > country.max)) {
+      setPhoneError(`Enter ${country.min === country.max ? country.min : `${country.min}–${country.max}`} digits for ${country.name}.`);
+      return;
+    }
+    setPhoneError("");
+    setSavingPhone(true);
+    try {
+      const value = localNumber ? `${country.dial}${localNumber}` : "";
+      const { data: profile, error: readError } = await supabase.from("profiles").select("data").eq("id", user.uid).maybeSingle();
+      if (readError) throw readError;
+      const { error } = await supabase.from("profiles").upsert({
+        id: user.uid,
+        data: { ...(profile?.data || {}), phone: value, phoneCountry: localNumber ? country.id : "", updatedAt: new Date().toISOString() },
+      }, { onConflict: "id" });
+      if (error) throw error;
+      setPhone(value ? localNumber : "");
+      setSavedPhone(value);
+      setPhoneLoadError(false);
+      showToast("Phone number saved. It remains unverified.");
+    } catch {
+      showToast("Could not save your phone number. Try again.", "error");
+    } finally {
+      setSavingPhone(false);
+    }
+  };
+
+  const resendVerification = async () => {
+    setSendingVerification(true);
+    try {
+      await sendEmailVerification(user);
+      showToast("Verification email sent. Check your inbox.");
+    } catch {
+      showToast("Could not send a verification email. Try again.", "error");
+    } finally {
+      setSendingVerification(false);
+    }
+  };
+
+  const copyUserId = async () => {
+    try {
+      await navigator.clipboard.writeText(user.uid);
+      showToast("User ID copied.");
+    } catch {
+      showToast("Could not copy the user ID.", "error");
+    }
+  };
+
   const saveName = async () => {
     if (!name.trim()) return;
     setSaving(true);
     try {
       await updateProfile(auth.currentUser, { displayName: name.trim() });
-      await setDoc(doc(db, "users", user.uid), { name: name.trim() }, { merge: true });
-      showToast("✓ Display name updated.");
+      await setDoc(doc(supabase, "users", user.uid), { name: name.trim() }, { merge: true });
+      showToast("Display name updated.");
     } catch {
       showToast("Failed to update name.", "error");
     }
@@ -72,9 +169,9 @@ export default function Profile() {
       const data = await res.json();
       if (data.secure_url) {
         await updateProfile(auth.currentUser, { photoURL: data.secure_url });
-        await setDoc(doc(db, "users", user.uid), { photoURL: data.secure_url }, { merge: true });
+        await setDoc(doc(supabase, "users", user.uid), { photoURL: data.secure_url }, { merge: true });
         setPhotoURL(data.secure_url);
-        showToast("✓ Profile photo updated.");
+        showToast("Profile photo updated.");
       } else {
         showToast("Upload failed. Try again.", "error");
       }
@@ -86,14 +183,14 @@ export default function Profile() {
 
   const changePassword = async () => {
     if (!currentPass || !newPass) { showToast("Fill both fields.", "error"); return; }
-    if (newPass.length < 6) { showToast("New password must be at least 6 characters.", "error"); return; }
+    if (newPass.length < 8) { showToast("New password must be at least 8 characters.", "error"); return; }
     setChangingPass(true);
     try {
       const cred = EmailAuthProvider.credential(user.email, currentPass);
       await reauthenticateWithCredential(auth.currentUser, cred);
       await updatePassword(auth.currentUser, newPass);
       setCurrentPass(""); setNewPass("");
-      showToast("✓ Password updated successfully.");
+      showToast("Password updated successfully.");
     } catch (err) {
       if (err.code === "auth/wrong-password") showToast("Current password is incorrect.", "error");
       else if (err.code === "auth/too-many-requests") showToast("Too many attempts. Try later.", "error");
@@ -105,15 +202,10 @@ export default function Profile() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body, #root { height: 100%; background: #000; font-family: 'Inter', sans-serif; }
-        @keyframes twinkle { 0%,100%{opacity:0.12} 50%{opacity:0.6} }
+        html, body, #root { height: 100%; background: #000; font-family: 'Manrope', sans-serif; }
         @keyframes fadeUp  { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
         @keyframes spin    { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
-
-        .starfield { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
-        .star { position: absolute; border-radius: 50%; background: #fff; animation: twinkle linear infinite; }
 
         /* ── TOAST ── */
         .pf-toast {
@@ -133,7 +225,7 @@ export default function Profile() {
           background: rgba(5,5,8,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
           position: sticky; top: 0; z-index: 10;
         }
-        .pf-back { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 9px 16px; font-size: 13px; color: #888; cursor: pointer; font-family: 'Inter'; transition: all 0.2s; }
+        .pf-back { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 9px 16px; font-size: 13px; color: #888; cursor: pointer; font-family: 'Manrope'; transition: all 0.2s; }
         .pf-back:hover { color: #fff; border-color: rgba(255,255,255,0.15); background: rgba(255,255,255,0.07); }
         .pf-brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: #ccc; margin-left: auto; }
         .pf-brand-mark { width: 28px; height: 28px; background: linear-gradient(135deg,#3d1f8a,#1a0d2e); border: 1px solid rgba(124,92,252,0.3); border-radius: 9px; display: flex; align-items: center; justify-content: center; }
@@ -163,14 +255,14 @@ export default function Profile() {
         .pf-field { margin-bottom: 18px; }
         .pf-field:last-child { margin-bottom: 0; }
         .pf-label { font-size: 11.5px; color: #555; letter-spacing: 0.4px; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; }
-        .pf-input { width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 13px 16px; font-size: 14px; font-family: 'Inter'; color: #e0e0e0; outline: none; transition: all 0.2s; -webkit-appearance: none; }
+        .pf-input { width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 13px 16px; font-size: 14px; font-family: 'Manrope'; color: #e0e0e0; outline: none; transition: all 0.2s; -webkit-appearance: none; }
         .pf-input::placeholder { color: #333; }
         .pf-input:focus { border-color: rgba(108,71,255,0.5); background: rgba(255,255,255,0.06); box-shadow: 0 0 0 3px rgba(108,71,255,0.08); }
         .pf-input:disabled { opacity: 0.35; cursor: not-allowed; }
 
         /* ── BUTTONS ── */
         .pf-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
-        .pf-btn { background: #fff; color: #000; border: none; border-radius: 10px; padding: 11px 20px; font-size: 13.5px; font-weight: 700; font-family: 'Inter'; cursor: pointer; transition: all 0.2s; -webkit-tap-highlight-color: transparent; }
+        .pf-btn { background: #fff; color: #000; border: none; border-radius: 10px; padding: 11px 20px; font-size: 13.5px; font-weight: 700; font-family: 'Manrope'; cursor: pointer; transition: all 0.2s; -webkit-tap-highlight-color: transparent; }
         .pf-btn:hover { background: #f0f0f0; }
         .pf-btn:disabled { opacity: 0.35; cursor: not-allowed; }
         .pf-btn.ghost { background: transparent; color: #555; border: 1px solid rgba(255,255,255,0.08); }
@@ -221,17 +313,11 @@ export default function Profile() {
             <div className="so-desc">You'll be signed out of Manshverse on this device.</div>
             <div className="so-btns">
               <button className="pf-btn ghost" style={{flex:1}} onClick={() => setSignOutConfirm(false)}>Cancel</button>
-              <button className="pf-btn danger" style={{flex:2}} onClick={() => { signOut(auth); navigate("/login"); }}>Sign Out</button>
+              <button className="pf-btn danger" style={{flex:2}} onClick={handleSignOut}>Sign Out</button>
             </div>
           </div>
         </div>
       )}
-
-      <div className="starfield">
-        {STARS?.map(s => (
-          <div key={s.id} className="star" style={{left:s.left,top:s.top,width:s.w,height:s.w,animationDuration:s.dur,animationDelay:s.delay,opacity:s.op}}/>
-        ))}
-      </div>
 
       <div className="pf">
         <div className="pf-top">
@@ -240,7 +326,7 @@ export default function Profile() {
             Back
           </button>
           <div className="pf-brand">
-            <div className="pf-brand-mark">{MV_LOGO}</div>
+            <BrandMark className="pf-brand-mark" size={28} />
             Manshverse
           </div>
         </div>
@@ -248,7 +334,8 @@ export default function Profile() {
         <div className="pf-body">
           {/* Hero */}
           <div className="pf-hero">
-            <div className="pf-av-wrap" onClick={() => imgRef.current?.click()} title="Change photo">
+            <div className="pf-hero-kicker">YOUR SPACE / ACCOUNT SETTINGS</div>
+            <button type="button" className="pf-av-wrap" onClick={() => imgRef.current?.click()} aria-label="Change profile photo" title="Change photo">
               <div className="pf-av">
                 {photoURL ? <img src={photoURL} alt=""/> : (user?.displayName?.[0] || user?.email?.[0] || "U").toUpperCase()}
               </div>
@@ -261,40 +348,72 @@ export default function Profile() {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 </div>
               )}
-            </div>
-            <input ref={imgRef} type="file" accept="image/*" style={{display:"none"}} onChange={uploadPhoto}/>
-            <div style={{flex:1,minWidth:0}}>
-              <div className="pf-hero-name">{user?.displayName || "Anonymous"}</div>
+            </button>
+            <input ref={imgRef} type="file" accept="image/*" aria-label="Upload a profile photo" style={{display:"none"}} onChange={uploadPhoto}/>
+            <div className="pf-hero-copy">
+              <h1 className="pf-hero-name">{user?.displayName || "Anonymous"}</h1>
               <div className="pf-hero-email">{user?.email}</div>
               <div className="pf-badges">
-                {isCreator && <span className="pf-badge creator">✦ Creator</span>}
-                {isGoogle ? <span className="pf-badge google">Google</span> : <span className="pf-badge email">Email</span>}
+                {isCreator && <span className="pf-badge creator"><AppIcon name="star" size={13}/>Creator</span>}
+                {isGoogle ? <span className="pf-badge google"><span className="pf-badge-mark">G</span>Google account</span> : <span className="pf-badge email"><svg aria-hidden="true" viewBox="0 0 20 20" fill="none"><rect x="2.5" y="4" width="15" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="m3.5 5 6.5 5 6.5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Email account</span>}
               </div>
             </div>
+            <div className="pf-hero-index"><span>MANSHVERSE</span><strong>01</strong><i/>ACCOUNT</div>
           </div>
 
           {/* Profile */}
-          <div className="pf-section">
+          <div className="pf-section pf-section-profile">
             <div className="pf-sec-label">Profile</div>
             <div className="pf-card">
               <div className="pf-field">
-                <div className="pf-label">Display name</div>
-                <input className="pf-input" value={name} onChange={e => setName(e.target.value)} placeholder="Your name"/>
+                <label className="pf-label" htmlFor="profile-display-name">Display name</label>
+                <input id="profile-display-name" autoComplete="name" className="pf-input" value={name} onChange={e => setName(e.target.value)} placeholder="Your name"/>
               </div>
               <div className="pf-field">
-                <div className="pf-label">Email address</div>
-                <input className="pf-input" value={user?.email || ""} disabled/>
+                <label className="pf-label" htmlFor="profile-email">Email address</label>
+                <input id="profile-email" autoComplete="email" className="pf-input" value={user?.email || ""} disabled/>
               </div>
               <div className="pf-row">
-                <button className="pf-btn" onClick={saveName} disabled={saving || !name.trim()}>
+                <button type="button" className="pf-btn" onClick={saveName} disabled={saving || !name.trim()}>
                   {saving ? "Saving..." : "Save changes"}
                 </button>
               </div>
             </div>
           </div>
 
+          {/* Contact and verification */}
+          <div className="pf-section pf-section-contact">
+            <div className="pf-sec-label">Contact</div>
+            <div className="pf-card">
+              <div className="pf-field">
+                <label className="pf-label" htmlFor="profile-phone">Phone number <span>OPTIONAL</span></label>
+                <div className="pf-phone-entry">
+                  <select id="profile-phone-country" className="pf-input pf-phone-country" value={phoneCountry} onChange={e => { setPhoneCountry(e.target.value); setPhoneError(""); }} disabled={loadingPhone} aria-label="Country and calling code">
+                    {PHONE_COUNTRIES.map(country => <option key={country.id} value={country.id}>{country.name} ({country.dial})</option>)}
+                  </select>
+                  <div className="pf-phone-number">
+                    <span aria-hidden="true">{PHONE_COUNTRIES.find(country => country.id === phoneCountry)?.dial}</span>
+                    <input id="profile-phone" autoComplete="tel-national" inputMode="numeric" type="tel" maxLength={15} className="pf-input" value={phone} onChange={e => { setPhone(e.target.value.replace(/\D/g, "")); setPhoneError(""); }} onBlur={() => { const country = PHONE_COUNTRIES.find(option => option.id === phoneCountry) || PHONE_COUNTRIES[0]; if (phone && (phone.length < country.min || phone.length > country.max)) setPhoneError(`Enter ${country.min === country.max ? country.min : `${country.min}–${country.max}`} digits for ${country.name}.`); }} placeholder="Phone number" disabled={loadingPhone} aria-describedby="profile-phone-help" aria-invalid={Boolean(phoneError)}/>
+                  </div>
+                </div>
+                <p className="pf-field-note" id="profile-phone-help">Enter your local number without the country code. The country code is added when saved. We check length only; this does not verify ownership.</p>
+                {phoneError && <p className="pf-inline-error" role="alert">{phoneError}</p>}
+                {phoneLoadError && <p className="pf-inline-error" role="status">Saved phone details could not be loaded. You can still enter a new number.</p>}
+              </div>
+              <div className="pf-row">
+                <button type="button" className="pf-btn" onClick={savePhone} disabled={loadingPhone || savingPhone || (phone ? `${PHONE_COUNTRIES.find(country => country.id === phoneCountry)?.dial}${phone}` : "") === savedPhone}>
+                  {savingPhone ? "Saving..." : "Save phone number"}
+                </button>
+              </div>
+              <div className="pf-verify-row">
+                <div><span className="pf-label">Email verification</span><strong className={user?.emailVerified ? "verified" : "unverified"}>{user?.emailVerified ? "Verified" : "Not verified"}</strong></div>
+                {!user?.emailVerified && <button type="button" className="pf-btn ghost" onClick={resendVerification} disabled={sendingVerification}>{sendingVerification ? "Sending..." : "Resend link"}</button>}
+              </div>
+            </div>
+          </div>
+
           {/* Password */}
-          <div className="pf-section">
+          <div className="pf-section pf-section-password">
             <div className="pf-sec-label">Password</div>
             <div className="pf-card">
               {isGoogle ? (
@@ -302,15 +421,15 @@ export default function Profile() {
               ) : (
                 <>
                   <div className="pf-field">
-                    <div className="pf-label">Current password</div>
-                    <input className="pf-input" type="password" placeholder="••••••••" value={currentPass} onChange={e => setCurrentPass(e.target.value)}/>
+                    <label className="pf-label" htmlFor="profile-current-password">Current password</label>
+                    <input id="profile-current-password" autoComplete="current-password" className="pf-input" type="password" placeholder="••••••••" value={currentPass} onChange={e => setCurrentPass(e.target.value)}/>
                   </div>
                   <div className="pf-field">
-                    <div className="pf-label">New password</div>
-                    <input className="pf-input" type="password" placeholder="Min. 6 characters" value={newPass} onChange={e => setNewPass(e.target.value)}/>
+                    <label className="pf-label" htmlFor="profile-new-password">New password</label>
+                    <input id="profile-new-password" autoComplete="new-password" className="pf-input" type="password" placeholder="At least 8 characters" value={newPass} onChange={e => setNewPass(e.target.value)} minLength={8}/>
                   </div>
                   <div className="pf-row">
-                    <button className="pf-btn" onClick={changePassword} disabled={changingPass}>{changingPass ? "Updating..." : "Update password"}</button>
+                    <button type="button" className="pf-btn" onClick={changePassword} disabled={changingPass}>{changingPass ? "Updating..." : "Update password"}</button>
                   </div>
                 </>
               )}
@@ -318,12 +437,13 @@ export default function Profile() {
           </div>
 
           {/* Account info */}
-          <div className="pf-section">
+          <div className="pf-section pf-section-account">
             <div className="pf-sec-label">Account info</div>
             <div className="pf-card">
               <div className="pf-info-row">
                 <span className="pf-info-k">User ID</span>
-                <span className="pf-info-v" style={{fontFamily:"monospace",fontSize:"11px"}}>{user?.uid?.slice(0,18)}...</span>
+                <span className="pf-info-v pf-id-value" title={user?.uid}>{user?.uid?.slice(0,18)}…</span>
+                <button type="button" className="pf-copy-id" onClick={copyUserId}>Copy</button>
               </div>
               <div className="pf-info-row">
                 <span className="pf-info-k">Sign-in method</span>
@@ -331,17 +451,17 @@ export default function Profile() {
               </div>
               <div className="pf-info-row">
                 <span className="pf-info-k">Account type</span>
-                <span className="pf-info-v" style={{color: isCreator ? "#c4b5fd" : "#555"}}>{isCreator ? "✦ Creator" : "Standard"}</span>
+                <span className="pf-info-v" style={{color: isCreator ? "#c4b5fd" : "#555"}}>{isCreator ? <><AppIcon name="star" size={12}/> Creator</> : "Standard"}</span>
               </div>
               <div className="pf-info-row">
                 <span className="pf-info-k">Platform</span>
-                <span className="pf-info-v">Manshverse · 14 March 2026</span>
+                <span className="pf-info-v">Manshverse workspace</span>
               </div>
             </div>
           </div>
 
           {/* Sign out */}
-          <div className="pf-section">
+          <div className="pf-section pf-section-session">
             <div className="pf-sec-label">Session</div>
             <div className="pf-danger-card">
               <div className="pf-danger-title">Sign out</div>

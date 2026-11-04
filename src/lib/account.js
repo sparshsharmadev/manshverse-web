@@ -1,4 +1,4 @@
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, setDoc } from "./firestore";
 
 export const APP_TIME_ZONE = "Asia/Kolkata";
 
@@ -57,16 +57,17 @@ export const getPlanSnapshot = (data = {}) => {
 };
 
 export const ensureUserProfileDoc = async (db, user, overrides = {}) => {
-  if (!db || !user?.uid) return null;
+  if (!user?.id && !user?.uid) return null;
 
-  const userRef = doc(db, "users", user.uid);
+  const userId = user.id || user.uid;
+  const userRef = doc(db, "users", userId);
   const userSnap = await getDoc(userRef);
   const existing = userSnap.exists() ? userSnap.data() : {};
 
   const payload = {
-    name: existing.name || overrides.name || user.displayName || user.email?.split("@")[0] || "User",
+    name: existing.name || overrides.name || user.user_metadata?.display_name || user.displayName || user.email?.split("@")[0] || "User",
     email: existing.email || overrides.email || user.email || "",
-    photoURL: existing.photoURL || overrides.photoURL || user.photoURL || "",
+    photoURL: existing.photoURL || overrides.photoURL || user.user_metadata?.avatar_url || user.photoURL || "",
     updatedAt: serverTimestamp(),
   };
 
