@@ -1,4 +1,4 @@
-import { performWebSearch, cleanSearchQuery } from "./search.js";
+import { performWebSearch, cleanSearchQuery, shouldPerformWebSearch, isExplicitSearch } from "./search.js";
 
 export const config = { runtime: "edge" };
 
@@ -20,10 +20,7 @@ const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const MAX_MESSAGES = 80;
 const MAX_TEXT_CHARS = 180_000;
 
-function shouldAutoSearch(text) {
-  if (!text || typeof text !== "string") return false;
-  return /\b(latest|breaking|today|yesterday|this week|current(?:ly)?|news|charged|guilty|indicted|trial|verdict|died|dead|price of|score|who won|election)\b/i.test(text);
-}
+// shouldAutoSearch is handled by shouldPerformWebSearch from ./search.js
 
 function resolveSearchQuery(messages = [], requestedQuery = "") {
   const userMessages = messages.filter(m => m?.role === "user");
@@ -178,13 +175,20 @@ export default async function handler(req) {
       : Array.isArray(lastUserMsg?.content)
         ? lastUserMsg.content.map(p => p?.text || "").join(" ")
         : "";
-    const wantWebSearch = Boolean(body.webSearch || shouldAutoSearch(userText));
+    const isExplicit = Boolean(body.explicitSearch || isExplicitSearch(userText) || isExplicitSearch(body.searchQuery));
+    const wantWebSearch = shouldPerformWebSearch({
+      text: userText,
+      isWebSearchEnabled: Boolean(body.webSearch),
+      isExplicitSearchCommand: isExplicit,
+    });
 
+    let didSearch = false;
     if (wantWebSearch) {
-      const queryToSearch = resolveSearchQuery(body.messages, body.searchQuery || userText);
+      const queryToSearch = resolveSearchQuery(body.messages, isExplicit ? (body.searchQuery || userText) : userText);
       if (queryToSearch) {
         const searchData = await performWebSearch(queryToSearch, 5);
         if (Array.isArray(searchData.results) && searchData.results.length > 0) {
+          didSearch = true;
           searchSources = searchData.results;
           const today = new Date().toISOString().split("T")[0];
           const searchContext = `\n\n--- REAL-TIME WEB SEARCH RESULTS (Current Date: ${today}) ---\n` +
@@ -236,10 +240,11 @@ export default async function handler(req) {
       });
     }
 
-    const searchHeaders = searchSources.length > 0 ? {
-      "X-Manshverse-Sources": encodeURIComponent(JSON.stringify(searchSources)),
-      "Access-Control-Expose-Headers": "X-Manshverse-Model, X-Manshverse-Sources",
-    } : {};
+    const searchHeaders = {
+      "X-Manshverse-Web-Search": didSearch ? "executed" : "skipped",
+      ...(searchSources.length > 0 ? { "X-Manshverse-Sources": encodeURIComponent(JSON.stringify(searchSources)) } : {}),
+      "Access-Control-Expose-Headers": "X-Manshverse-Model, X-Manshverse-Sources, X-Manshverse-Web-Search",
+    };
 
     if (body.stream && upstream.body) {
       return new Response(upstream.body, {

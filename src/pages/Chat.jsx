@@ -15,6 +15,7 @@ import { getPlanSnapshot, getUsageDayKey } from "../lib/account";
 import { DEFAULT_PLAN_LIMITS, normalizePlanLimits, PLAN_META } from "../lib/plans";
 import { STARS } from "../lib/stars";
 import { artifactFilename, escapeHtml, makeArtifactHtml, extractArtifactFiles, buildArtifactWebsite, downloadArtifact } from "../lib/artifacts";
+import { shouldPerformWebSearch, isExplicitSearch } from "../lib/searchIntent";
 
 const ArtifactStudio = lazy(() => import("../components/ArtifactStudio"));
 const MarkdownText = lazy(() => import("../components/MarkdownText"));
@@ -333,11 +334,18 @@ async function callModelStream(modelId, messages, systemPrompt, imgB64, imgType,
       messages: [{ role: "system", content: systemPrompt }, ...formatted],
       stream: true,
       webSearch: options.webSearch === true,
+      explicitSearch: options.explicitSearch === true,
       searchQuery: options.searchQuery || undefined,
     }),
   });
   if (!res.ok) { const { text, data } = await readPayload(res); throw new Error(data?.error?.message || text || `Error ${res.status}`); }
   onResolvedModel?.(res.headers.get("X-Manshverse-Model") || modelId);
+  const searchStatus = res.headers.get("X-Manshverse-Web-Search");
+  if (searchStatus === "skipped") {
+    options.onSearchState?.(false);
+  } else if (searchStatus === "executed") {
+    options.onSearchState?.(true);
+  }
   const rawSources = res.headers.get("X-Manshverse-Sources");
   if (rawSources) {
     try {
@@ -746,10 +754,11 @@ useEffect(() => {
     const sourceMessages = options.baseMessages || messages;
     const commandForMessage = selectedSlashCommand && !isRetry && !isEdit ? selectedSlashCommand : null;
     const isSearchCommand = commandForMessage?.name === "search";
+    const explicitSearch = Boolean(isSearchCommand || isExplicitSearch(rawText));
     const isWebSearch = Boolean(
       options.webSearch !== undefined
         ? options.webSearch
-        : (webSearchEnabled || isSearchCommand || /^\/search\b/i.test(rawText))
+        : (webSearchEnabled || explicitSearch)
     );
     const text = commandForMessage ? commandForMessage.build(rawText) : rawText;
     if (!text && !imageBase64) return;
@@ -788,13 +797,19 @@ useEffect(() => {
       ? { ...sourceMessages[editAt], content: text, editedAt: now }
       : { role: "user", content: text || "Image attached", modelLabel: targetModel.label, createdAt: now };
 
+    const willSearch = shouldPerformWebSearch({
+      text: rawText,
+      isWebSearchEnabled: isWebSearch,
+      isExplicitSearchCommand: explicitSearch,
+    });
+
     const assistantPending = {
       role: "assistant",
       content: "",
       modelLabel: targetModel.label,
       modelId: targetModel.id,
       streaming: true,
-      webSearching: isWebSearch,
+      webSearching: willSearch,
       sources: [],
       createdAt: now,
     };
@@ -871,7 +886,13 @@ useEffect(() => {
         modelId => { resolvedModelId = modelId; },
         {
           webSearch: isWebSearch,
-          searchQuery: isWebSearch ? (rawText.replace(/^\/search\s*/i, "").trim() || text) : undefined,
+          explicitSearch,
+          searchQuery: explicitSearch ? (rawText.replace(/^\/search\s*/i, "").trim() || text) : undefined,
+          onSearchState: didSearch => {
+            if (!didSearch) {
+              setMessages(previous => previous.map((message, index) => index === pidx ? { ...message, webSearching: false } : message));
+            }
+          },
           onSources: sources => {
             resolvedSources = sources;
             setMessages(previous => previous.map((message, index) => index === pidx ? { ...message, sources, webSearching: false } : message));
@@ -1339,7 +1360,7 @@ Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "
             type="button"
             className={`input-icon-btn ${webSearchEnabled ? "active-icon-btn" : ""}`}
             onClick={() => setWebSearchEnabled(p => !p)}
-            title={webSearchEnabled ? "Web search active (click to turn off)" : "Search the web with Tavily"}
+            title={webSearchEnabled ? "Smart web search active (searches only when needed)" : "Enable smart web search"}
             aria-label={webSearchEnabled ? "Disable web search" : "Enable web search"}
           >
             <AppIcon name="globe" size={16} />
@@ -1358,7 +1379,7 @@ Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "
       </div>
       {!compact && (
         <div className="quick-actions">
-          <button type="button" className={`qa-chip ${webSearchEnabled ? "qa-chip-active-web" : ""}`} onClick={() => setWebSearchEnabled(p => !p)} title="Search the web with Tavily and DuckDuckGo fallback">
+          <button type="button" className={`qa-chip ${webSearchEnabled ? "qa-chip-active-web" : ""}`} onClick={() => setWebSearchEnabled(p => !p)} title="Smart web search: searches only when up-to-date or unknown facts are needed">
             <AppIcon name="globe" size={13}/> {webSearchEnabled ? "Search: ON" : "Web Search"}
           </button>
           <button className="qa-chip" onClick={() => setView("memory")}><AppIcon name="save" size={13}/> Memory {memoryEnabled && memories.length ? `· ${memories.length}` : ""}</button>
@@ -1377,7 +1398,7 @@ Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "
       )}
       {compact && (
         <div className="compact-quick-actions">
-          <button type="button" className={`qa-chip ${webSearchEnabled ? "qa-chip-active-web" : ""}`} onClick={() => setWebSearchEnabled(p => !p)} title="Search the web with Tavily and DuckDuckGo fallback">
+          <button type="button" className={`qa-chip ${webSearchEnabled ? "qa-chip-active-web" : ""}`} onClick={() => setWebSearchEnabled(p => !p)} title="Smart web search: searches only when up-to-date or unknown facts are needed">
             <AppIcon name="globe" size={12}/> {webSearchEnabled ? "Search: ON" : "Web Search"}
           </button>
           <button className="qa-chip" onClick={() => setView("memory")}><AppIcon name="save" size={13}/> Memory</button>
