@@ -20,6 +20,31 @@ const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const MAX_MESSAGES = 80;
 const MAX_TEXT_CHARS = 180_000;
 
+function shouldAutoSearch(text) {
+  if (!text || typeof text !== "string") return false;
+  return /\b(latest|breaking|today|yesterday|this week|current(?:ly)?|news|charged|guilty|indicted|trial|verdict|died|dead|price of|score|who won|election)\b/i.test(text);
+}
+
+function resolveSearchQuery(messages = [], requestedQuery = "") {
+  const userMessages = messages.filter(m => m?.role === "user");
+  const lastUser = userMessages[userMessages.length - 1];
+  const lastText = typeof lastUser?.content === "string"
+    ? lastUser.content
+    : Array.isArray(lastUser?.content) ? lastUser.content.map(p => p?.text || "").join(" ") : "";
+
+  const prevUser = userMessages[userMessages.length - 2];
+  const prevText = typeof prevUser?.content === "string"
+    ? prevUser.content
+    : Array.isArray(prevUser?.content) ? prevUser.content.map(p => p?.text || "").join(" ") : "";
+
+  const clean = cleanSearchQuery(requestedQuery || lastText);
+  const isShortFollowUp = clean.length < 35 || /\b(he|she|it|they|this|that|him|her|them|isn't|aren't|did he|was he|when|where|why|sure|really)\b/i.test(clean);
+  if (isShortFollowUp && prevText) {
+    return cleanSearchQuery(`${prevText} ${clean}`);
+  }
+  return clean;
+}
+
 function selectManshModel(messages = []) {
   if (!Array.isArray(messages)) return "openai/gpt-oss-20b";
   const userMessages = messages.filter(message => message?.role === "user");
@@ -147,26 +172,29 @@ export default async function handler(req) {
 
     let searchSources = [];
     let messagesToSend = body.messages.map(m => ({ ...m }));
-    if (body.webSearch) {
-      const lastUserMsg = [...body.messages].reverse().find(m => m?.role === "user");
-      const userText = typeof lastUserMsg?.content === "string"
-        ? lastUserMsg.content
-        : Array.isArray(lastUserMsg?.content)
-          ? lastUserMsg.content.map(p => p?.text || "").join(" ")
-          : "";
-      const queryToSearch = cleanSearchQuery(body.searchQuery || userText);
+    const lastUserMsg = [...body.messages].reverse().find(m => m?.role === "user");
+    const userText = typeof lastUserMsg?.content === "string"
+      ? lastUserMsg.content
+      : Array.isArray(lastUserMsg?.content)
+        ? lastUserMsg.content.map(p => p?.text || "").join(" ")
+        : "";
+    const wantWebSearch = Boolean(body.webSearch || shouldAutoSearch(userText));
+
+    if (wantWebSearch) {
+      const queryToSearch = resolveSearchQuery(body.messages, body.searchQuery || userText);
       if (queryToSearch) {
         const searchData = await performWebSearch(queryToSearch, 5);
         if (Array.isArray(searchData.results) && searchData.results.length > 0) {
           searchSources = searchData.results;
           const today = new Date().toISOString().split("T")[0];
-          const searchContext = `\n\n--- REAL-TIME WEB SEARCH RESULTS (Date: ${today}) ---\n` +
+          const searchContext = `\n\n--- REAL-TIME WEB SEARCH RESULTS (Current Date: ${today}) ---\n` +
             `Search Query: "${searchData.query}"\n` +
             `Search Provider: ${searchData.provider}\n\n` +
             searchData.results.map((r, i) => `[${i + 1}] "${r.title}"\nURL: ${r.url}\nSummary: ${r.content}`).join("\n\n") +
             `\n\n--- CITATION RULES ---\n` +
-            `- Synthesize your response clearly and accurately using the real-time search results above.\n` +
-            `- Cite facts using bracket numbers like [1], [2], etc., immediately after each statement supported by that source.\n` +
+            `- Answer accurately using the real-time search results above.\n` +
+            `- Cite facts using bracket numbers like [1], [2], etc., immediately following the statements they support.\n` +
+            `- Be completely up-to-date with current legal trials, allegations, charges, and verdicts.\n` +
             `- Do not invent sources, citations, or facts outside of these search results.\n---`;
 
           const sysIndex = messagesToSend.findIndex(m => m.role === "system");

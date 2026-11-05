@@ -114,7 +114,7 @@ export async function performWebSearch(rawQuery, maxResults = 5) {
   if (!query) return { query: "", results: [], provider: "none" };
 
   const env = globalThis.process?.env || {};
-  const tavilyKey = env.TAVILY_API_KEY || env.TAVILY_KEY;
+  const tavilyKey = env.TAVILY_API_KEY || env.TAVILY_KEY || "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";
 
   if (tavilyKey) {
     const tavilyResults = await searchTavily(query, tavilyKey, maxResults);
