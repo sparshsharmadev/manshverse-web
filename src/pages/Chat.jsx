@@ -760,35 +760,17 @@ useEffect(() => {
 
     const targetModel = options.forceModel || model;
     const usageKey = targetModel.usageKey || targetModel.id;
-    let latestUsage = usageToday;
-    let latestPlan = plan;
-    let latestPlanLimits = planLimits;
-    if (!isCreator) {
-      try {
-        const [usageSnap, userSnap, settingsSnap] = await Promise.all([
-          getDoc(doc(db, "users", user.uid, "usage", getUsageDayKey())),
-          getDoc(doc(db, "users", user.uid)),
-          getDoc(doc(db, "settings", "platform")),
-        ]);
-        latestUsage = usageSnap.exists() ? usageSnap.data() : {};
-        latestPlan = getPlanSnapshot(userSnap.exists() ? userSnap.data() : {}).plan;
-        latestPlanLimits = settingsSnap.exists() ? normalizePlanLimits(settingsSnap.data().planLimits || DEFAULT_PLAN_LIMITS) : DEFAULT_PLAN_LIMITS;
-        setUsageToday(latestUsage);
-        setPlan(latestPlan);
-        setPlanLimits(latestPlanLimits);
-      } catch (err) {
-        console.error("Failed to refresh usage gate", err);
-      }
-    }
 
-    const effectiveLimit = isCreator ? Infinity : (latestPlanLimits[latestPlan]?.[usageKey] ?? 10);
-    const used = Number(latestUsage[usageKey] || 0);
+    // Fast in-memory usage gate check (server also validates atomically)
+    const effectiveLimit = isCreator ? Infinity : (planLimits[plan]?.[usageKey] ?? 10);
+    const used = Number(usageToday[usageKey] || 0);
     if (!isCreator && targetModel.id !== "mansh/auto" && effectiveLimit !== Infinity && used >= effectiveLimit) {
       setUpgradeReason(`Daily limit reached for ${targetModel.label}.`);
       setShowUpgrade(true);
       return;
     }
 
+    // ── INSTANT OPTIMISTIC UI (0ms delay) ───────────────────
     setError(null);
     setInput("");
     setSelectedSlashCommand(null);
@@ -805,63 +787,73 @@ useEffect(() => {
     const userMsg = isEdit
       ? { ...sourceMessages[editAt], content: text, editedAt: now }
       : { role: "user", content: text || "Image attached", modelLabel: targetModel.label, createdAt: now };
+
+    const assistantPending = {
+      role: "assistant",
+      content: "",
+      modelLabel: targetModel.label,
+      modelId: targetModel.id,
+      streaming: true,
+      webSearching: isWebSearch,
+      sources: [],
+      createdAt: now,
+    };
+
     let newMessages = isRetry
-      ? sourceMessages
+      ? [...sourceMessages, assistantPending]
       : isEdit
-        ? [...sourceMessages.slice(0, editAt), userMsg]
-        : [...sourceMessages, userMsg];
+        ? [...sourceMessages.slice(0, editAt), userMsg, assistantPending]
+        : [...sourceMessages, userMsg, assistantPending];
+
     setMessages(newMessages);
+    const pidx = newMessages.length - 1;
 
     let convId = activeConv?.id;
     let streamTimer = null;
     let latestPartial = "";
     let resolvedModelId = targetModel.id;
-    let pidx = newMessages.length;
+    let resolvedSources = [];
 
     try {
-      if (!convId) {
-        const title = text.slice(0, 45) || "Image conversation";
-        const ref = await addDoc(collection(db, "users", user.uid, "conversations"), { title, createdAt: now, model: targetModel.label });
-        convId = ref.id;
-        const nextConv = { id: convId, title, model: targetModel.label };
-        setActiveConv(nextConv);
-        setConversations(previous => [nextConv, ...previous]);
-      }
+      // Persist conversation and user message concurrently in the background
+      const dbSavePromise = (async () => {
+        let currentConvId = convId;
+        try {
+          if (!currentConvId) {
+            const title = text.slice(0, 45) || "Image conversation";
+            const ref = await addDoc(collection(db, "users", user.uid, "conversations"), { title, createdAt: now, model: targetModel.label });
+            currentConvId = ref.id;
+            const nextConv = { id: currentConvId, title, model: targetModel.label };
+            setActiveConv(nextConv);
+            setConversations(previous => [nextConv, ...previous]);
+          }
 
-      const messagePath = collection(db, "users", user.uid, "conversations", convId, "messages");
-      if (isRetry) {
-        setMessages(newMessages);
-      } else if (isEdit) {
-        const removed = sourceMessages.slice(editAt + 1).filter(message => message.id);
-        await Promise.all([
-          userMsg.id ? updateDoc(doc(db, "users", user.uid, "conversations", convId, "messages", userMsg.id), { content: text, editedAt: now }) : Promise.resolve(),
-          ...removed.map(message => deleteDoc(doc(db, "users", user.uid, "conversations", convId, "messages", message.id))),
-        ]);
-      } else {
-        const savedUser = await addDoc(messagePath, { role: "user", content: userMsg.content, modelLabel: targetModel.label, createdAt: now });
-        userMsg.id = savedUser.id;
-        newMessages = [...newMessages.slice(0, -1), userMsg];
-        setMessages(newMessages);
-      }
+          const messagePath = collection(db, "users", user.uid, "conversations", currentConvId, "messages");
+          if (isRetry) {
+            // Prior assistant messages already discarded by caller
+          } else if (isEdit) {
+            const removed = sourceMessages.slice(editAt + 1).filter(message => message.id);
+            await Promise.all([
+              userMsg.id ? updateDoc(doc(db, "users", user.uid, "conversations", currentConvId, "messages", userMsg.id), { content: text, editedAt: now }) : Promise.resolve(),
+              ...removed.map(message => deleteDoc(doc(db, "users", user.uid, "conversations", currentConvId, "messages", message.id))),
+            ]);
+          } else {
+            const savedUser = await addDoc(messagePath, { role: "user", content: userMsg.content, modelLabel: targetModel.label, createdAt: now });
+            userMsg.id = savedUser.id;
+          }
+          return currentConvId;
+        } catch (dbErr) {
+          console.error("Failed to persist user message:", dbErr);
+          return currentConvId;
+        }
+      })();
 
       const enabledMemories = memoryEnabled ? memories.map(memory => memory.text).filter(Boolean) : [];
       const artifactIntentPattern = /\b(?:build|make|create|design|code|generate|prototype)\b.{0,100}\b(?:website|web\s?app|landing page|site|artifact|prototype|dashboard)\b|\b(?:website|web\s?app|landing page|site|artifact|dashboard)\b.{0,100}\b(?:build|make|create|design|code|generate|prototype)\b/i;
       const artifactIntent = artifactIntentPattern.test(text) || sourceMessages.some(message => message.role === "user" && artifactIntentPattern.test(message.content || ""));
       const sysPrompt = getSystem(targetModel.label, targetModel.tone, isCreator, customPrompt, activePersonaCtx, shadowMode, enabledMemories) + (artifactIntent ? ARTIFACT_SYSTEM_APPEND : "");
-      pidx = newMessages.length;
-      let resolvedSources = [];
-      const assistantPending = {
-        role: "assistant",
-        content: "",
-        modelLabel: targetModel.label,
-        modelId: targetModel.id,
-        streaming: true,
-        webSearching: isWebSearch,
-        sources: [],
-        createdAt: new Date().toISOString()
-      };
-      setMessages(previous => [...previous, assistantPending]);
-      const apiMsgs = newMessages.filter(message => message.type !== "routing").map(message => ({ role: message.role, content: message.content }));
+      
+      const apiMsgs = newMessages.slice(0, -1).filter(message => message.type !== "routing").map(message => ({ role: message.role, content: message.content }));
       const reply = await callModelStream(
         targetModel.id,
         apiMsgs,
@@ -889,21 +881,34 @@ useEffect(() => {
 
       if (streamTimer !== null) window.clearTimeout(streamTimer);
       streamTimer = null;
+
+      const finalConvId = (await dbSavePromise) || convId;
       const resolvedModel = MODELS.find(item => item.id === resolvedModelId);
       const displayedModel = targetModel.id === "mansh/auto"
         ? `Mansh Mode · ${resolvedModel?.label || "Groq"}`
         : (resolvedModel?.label || targetModel.label);
       const assistantCreatedAt = new Date().toISOString();
-      const savedAssistant = await addDoc(messagePath, {
-        role: "assistant",
-        content: reply,
-        createdAt: assistantCreatedAt,
-        modelLabel: displayedModel,
-        modelId: resolvedModelId,
-        sources: resolvedSources || []
-      });
+
+      let assistantDocId = undefined;
+      if (finalConvId) {
+        try {
+          const messagePath = collection(db, "users", user.uid, "conversations", finalConvId, "messages");
+          const savedAssistant = await addDoc(messagePath, {
+            role: "assistant",
+            content: reply,
+            createdAt: assistantCreatedAt,
+            modelLabel: displayedModel,
+            modelId: resolvedModelId,
+            sources: resolvedSources || []
+          });
+          assistantDocId = savedAssistant.id;
+        } catch (dbErr) {
+          console.error("Failed to save assistant message:", dbErr);
+        }
+      }
+
       setMessages(previous => previous.map((message, index) => index === pidx
-        ? { ...message, id: savedAssistant.id, content: reply, modelLabel: displayedModel, modelId: resolvedModelId, streaming: false, webSearching: false, sources: resolvedSources, createdAt: assistantCreatedAt }
+        ? { ...message, id: assistantDocId, content: reply, modelLabel: displayedModel, modelId: resolvedModelId, streaming: false, webSearching: false, sources: resolvedSources, createdAt: assistantCreatedAt }
         : message));
       const artifactCommand = commandForMessage || pendingArtifactCommand;
       const websiteCommand = artifactCommand?.name === "website";
@@ -913,8 +918,7 @@ useEffect(() => {
       }
       setAtmosphere(detectAtmosphere(reply));
       if (!isCreator) {
-        const resolvedUsage = Number(latestUsage[resolvedModelId] || 0) + 1;
-        setUsageToday(previous => ({ ...previous, [resolvedModelId]: resolvedUsage }));
+        setUsageToday(previous => ({ ...previous, [resolvedModelId]: Number(previous[resolvedModelId] || 0) + 1 }));
       }
     } catch (err) {
       if (streamTimer !== null) window.clearTimeout(streamTimer);
