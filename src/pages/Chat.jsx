@@ -54,6 +54,7 @@ const SLASH_COMMANDS = [
   { name:"sql", description:"Write and explain a SQL query", build: subject => `Write a correct, readable SQL solution for ${subject || "the data task from our conversation"}. State any schema assumptions, explain the query briefly, and mention relevant edge cases.` },
   { name:"slides", description:"Create a concise presentation outline", build: subject => `Create a presentation outline for ${subject || "the topic from our conversation"}. Give each slide a headline, its key point, and concise supporting content. Build a clear narrative from opening to close.` },
   { name:"website", description:"Build and preview a complete website", opensArtifact:true, build: subject => `Build a polished, responsive, working website for ${subject || "the idea from our conversation"}. Use complete runnable files with clear filenames and no external dependencies; make the result ready for an in-chat preview.` },
+  { name:"search", description:"Search the web for up-to-date facts and sources", webSearch:true, build: subject => subject || "" },
 ];
 const DEFAULT_MODEL = MODELS[0];
 const formatMessageTime = value => {
@@ -319,14 +320,33 @@ const getSystem = (modelLabel, tone, isCreator, customPrompt, personaCtx, shadow
 };
 
 // ── GROQ STREAMING ───────────────────────────────────────
-async function callModelStream(modelId, messages, systemPrompt, imgB64, imgType, onChunk, onResolvedModel) {
+async function callModelStream(modelId, messages, systemPrompt, imgB64, imgType, onChunk, onResolvedModel, options = {}) {
   const formatted = messages.map((m, i) => {
     if (i === messages.length - 1 && imgB64 && imgType === "image") return { role: m.role, content: [{ type: "text", text: m.content||"Analyze this." }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imgB64}` } }] };
     return { role: m.role, content: m.content };
   });
-  const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() }, body: JSON.stringify({ model: modelId, messages: [{ role: "system", content: systemPrompt }, ...formatted], stream: true }) });
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...await getApiAuthHeaders() },
+    body: JSON.stringify({
+      model: modelId,
+      messages: [{ role: "system", content: systemPrompt }, ...formatted],
+      stream: true,
+      webSearch: options.webSearch === true,
+      searchQuery: options.searchQuery || undefined,
+    }),
+  });
   if (!res.ok) { const { text, data } = await readPayload(res); throw new Error(data?.error?.message || text || `Error ${res.status}`); }
   onResolvedModel?.(res.headers.get("X-Manshverse-Model") || modelId);
+  const rawSources = res.headers.get("X-Manshverse-Sources");
+  if (rawSources) {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(rawSources));
+      if (Array.isArray(parsed) && parsed.length > 0) options.onSources?.(parsed);
+    } catch {
+      /* ignore invalid sources header */
+    }
+  }
   const reader = res.body.getReader(); const decoder = new TextDecoder();
   let buffer = "", full = "";
   while (true) {
@@ -468,6 +488,7 @@ export default function Chat() {
 
   // ── NEW STATE ────────────────────────────────────────────
   const [shadowMode, setShadowMode] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [atmosphere, setAtmosphere] = useState("default");
   const [showEmailVerify, setShowEmailVerify] = useState(false);
   const [verifySent, setVerifySent] = useState(false);
@@ -724,6 +745,12 @@ useEffect(() => {
     const isEdit = !isRetry && Number.isInteger(editAt);
     const sourceMessages = options.baseMessages || messages;
     const commandForMessage = selectedSlashCommand && !isRetry && !isEdit ? selectedSlashCommand : null;
+    const isSearchCommand = commandForMessage?.name === "search";
+    const isWebSearch = Boolean(
+      options.webSearch !== undefined
+        ? options.webSearch
+        : (webSearchEnabled || isSearchCommand || /^\/search\b/i.test(rawText))
+    );
     const text = commandForMessage ? commandForMessage.build(rawText) : rawText;
     if (!text && !imageBase64) return;
     if (isBanned && !isCreator) { setError("ACCESS DENIED: Your account is suspended."); return; }
@@ -822,17 +849,43 @@ useEffect(() => {
       const artifactIntent = artifactIntentPattern.test(text) || sourceMessages.some(message => message.role === "user" && artifactIntentPattern.test(message.content || ""));
       const sysPrompt = getSystem(targetModel.label, targetModel.tone, isCreator, customPrompt, activePersonaCtx, shadowMode, enabledMemories) + (artifactIntent ? ARTIFACT_SYSTEM_APPEND : "");
       pidx = newMessages.length;
-      const assistantPending = { role: "assistant", content: "", modelLabel: targetModel.label, modelId: targetModel.id, streaming: true, createdAt: new Date().toISOString() };
+      let resolvedSources = [];
+      const assistantPending = {
+        role: "assistant",
+        content: "",
+        modelLabel: targetModel.label,
+        modelId: targetModel.id,
+        streaming: true,
+        webSearching: isWebSearch,
+        sources: [],
+        createdAt: new Date().toISOString()
+      };
       setMessages(previous => [...previous, assistantPending]);
       const apiMsgs = newMessages.filter(message => message.type !== "routing").map(message => ({ role: message.role, content: message.content }));
-      const reply = await callModelStream(targetModel.id, apiMsgs, sysPrompt, imgB64, imgType, partial => {
-        latestPartial = partial;
-        if (streamTimer !== null) return;
-        streamTimer = window.setTimeout(() => {
-          streamTimer = null;
-          setMessages(previous => previous.map((message, index) => index === pidx ? { ...message, content: latestPartial } : message));
-        }, 55);
-      }, modelId => { resolvedModelId = modelId; });
+      const reply = await callModelStream(
+        targetModel.id,
+        apiMsgs,
+        sysPrompt,
+        imgB64,
+        imgType,
+        partial => {
+          latestPartial = partial;
+          if (streamTimer !== null) return;
+          streamTimer = window.setTimeout(() => {
+            streamTimer = null;
+            setMessages(previous => previous.map((message, index) => index === pidx ? { ...message, content: latestPartial, webSearching: false } : message));
+          }, 55);
+        },
+        modelId => { resolvedModelId = modelId; },
+        {
+          webSearch: isWebSearch,
+          searchQuery: isWebSearch ? (rawText.replace(/^\/search\s*/i, "").trim() || text) : undefined,
+          onSources: sources => {
+            resolvedSources = sources;
+            setMessages(previous => previous.map((message, index) => index === pidx ? { ...message, sources, webSearching: false } : message));
+          }
+        }
+      );
 
       if (streamTimer !== null) window.clearTimeout(streamTimer);
       streamTimer = null;
@@ -841,9 +894,16 @@ useEffect(() => {
         ? `Mansh Mode · ${resolvedModel?.label || "Groq"}`
         : (resolvedModel?.label || targetModel.label);
       const assistantCreatedAt = new Date().toISOString();
-      const savedAssistant = await addDoc(messagePath, { role: "assistant", content: reply, createdAt: assistantCreatedAt, modelLabel: displayedModel, modelId: resolvedModelId });
+      const savedAssistant = await addDoc(messagePath, {
+        role: "assistant",
+        content: reply,
+        createdAt: assistantCreatedAt,
+        modelLabel: displayedModel,
+        modelId: resolvedModelId,
+        sources: resolvedSources || []
+      });
       setMessages(previous => previous.map((message, index) => index === pidx
-        ? { ...message, id: savedAssistant.id, content: reply, modelLabel: displayedModel, modelId: resolvedModelId, streaming: false, createdAt: assistantCreatedAt }
+        ? { ...message, id: savedAssistant.id, content: reply, modelLabel: displayedModel, modelId: resolvedModelId, streaming: false, webSearching: false, sources: resolvedSources, createdAt: assistantCreatedAt }
         : message));
       const artifactCommand = commandForMessage || pendingArtifactCommand;
       const websiteCommand = artifactCommand?.name === "website";
@@ -946,7 +1006,7 @@ useEffect(() => {
       setMessages(baseMessages);
       const retryModelId = fallbackModelId || assistant?.modelId || model.id;
       const retryModel = MODELS.find(item => item.id === retryModelId) || DEFAULT_MODEL;
-      await sendMessage(baseMessages[userIndex].content, { retry: true, baseMessages, forceModel: retryModel });
+      await sendMessage(baseMessages[userIndex].content, { retry: true, baseMessages, forceModel: retryModel, webSearch: Boolean(assistant?.sources?.length) });
     } catch {
       setError("Could not retry that response. Please try again.");
     }
@@ -1271,6 +1331,15 @@ Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "
           rows={1}
         />
         <div className="input-actions">
+          <button
+            type="button"
+            className={`input-icon-btn ${webSearchEnabled ? "active-icon-btn" : ""}`}
+            onClick={() => setWebSearchEnabled(p => !p)}
+            title={webSearchEnabled ? "Web search active (click to turn off)" : "Search the web with Tavily"}
+            aria-label={webSearchEnabled ? "Disable web search" : "Enable web search"}
+          >
+            <AppIcon name="globe" size={16} />
+          </button>
           {model.vision && (
             <button className="input-icon-btn" onClick={() => fileRef.current?.click()} title="Attach image">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -1285,6 +1354,9 @@ Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "
       </div>
       {!compact && (
         <div className="quick-actions">
+          <button type="button" className={`qa-chip ${webSearchEnabled ? "qa-chip-active-web" : ""}`} onClick={() => setWebSearchEnabled(p => !p)} title="Search the web with Tavily and DuckDuckGo fallback">
+            <AppIcon name="globe" size={13}/> {webSearchEnabled ? "Search: ON" : "Web Search"}
+          </button>
           <button className="qa-chip" onClick={() => setView("memory")}><AppIcon name="save" size={13}/> Memory {memoryEnabled && memories.length ? `· ${memories.length}` : ""}</button>
           <button className="qa-chip" onClick={enhancePrompt} disabled={enhancing || !input.trim()}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
@@ -1301,6 +1373,9 @@ Give 2–3 concrete actions the user can take. ${councilDepth === "detailed" ? "
       )}
       {compact && (
         <div className="compact-quick-actions">
+          <button type="button" className={`qa-chip ${webSearchEnabled ? "qa-chip-active-web" : ""}`} onClick={() => setWebSearchEnabled(p => !p)} title="Search the web with Tavily and DuckDuckGo fallback">
+            <AppIcon name="globe" size={12}/> {webSearchEnabled ? "Search: ON" : "Web Search"}
+          </button>
           <button className="qa-chip" onClick={() => setView("memory")}><AppIcon name="save" size={13}/> Memory</button>
           <button className="qa-chip" onClick={enhancePrompt} disabled={enhancing || !input.trim()}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>

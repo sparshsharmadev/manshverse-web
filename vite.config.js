@@ -3,10 +3,11 @@ import process from 'node:process'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import chatHandler from './api/chat.js'
+import searchHandler from './api/search.js'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  for (const key of ['GROQ_API_KEY', 'GROQ_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY']) {
+  for (const key of ['TAVILY_API_KEY', 'TAVILY_KEY', 'GROQ_API_KEY', 'GROQ_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY']) {
     if (!process.env[key] && env[key]) process.env[key] = env[key]
   }
 
@@ -17,7 +18,9 @@ export default defineConfig(({ mode }) => {
         name: 'manshverse-local-chat-api',
         configureServer(server) {
           server.middlewares.use(async (req, res, next) => {
-            if (new URL(req.url || '/', 'http://localhost').pathname !== '/api/chat') return next()
+            const pathname = new URL(req.url || '/', 'http://localhost').pathname
+            const handler = pathname === '/api/chat' ? chatHandler : pathname === '/api/search' ? searchHandler : null
+            if (!handler) return next()
 
             try {
               const headers = new Headers()
@@ -33,7 +36,7 @@ export default defineConfig(({ mode }) => {
                   ? { body: Readable.toWeb(req), duplex: 'half' }
                   : {}),
               })
-              const response = await chatHandler(request)
+              const response = await handler(request)
               res.statusCode = response.status
               response.headers.forEach((value, key) => res.setHeader(key, value))
               if (!response.body) return res.end()

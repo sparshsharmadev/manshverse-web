@@ -1,3 +1,5 @@
+import { performWebSearch, cleanSearchQuery } from "./search.js";
+
 export const config = { runtime: "edge" };
 
 const json = (body, status = 200) =>
@@ -142,7 +144,45 @@ export default async function handler(req) {
 
     const maxTokens = Math.max(1, Math.min(Number(body.max_tokens) || 2048, 4096));
     let responseModel = modelKey;
-    let upstream = await requestGroq(groqKey, responseModel, body.messages, body.stream === true, maxTokens);
+
+    let searchSources = [];
+    let messagesToSend = body.messages.map(m => ({ ...m }));
+    if (body.webSearch) {
+      const lastUserMsg = [...body.messages].reverse().find(m => m?.role === "user");
+      const userText = typeof lastUserMsg?.content === "string"
+        ? lastUserMsg.content
+        : Array.isArray(lastUserMsg?.content)
+          ? lastUserMsg.content.map(p => p?.text || "").join(" ")
+          : "";
+      const queryToSearch = cleanSearchQuery(body.searchQuery || userText);
+      if (queryToSearch) {
+        const searchData = await performWebSearch(queryToSearch, 5);
+        if (Array.isArray(searchData.results) && searchData.results.length > 0) {
+          searchSources = searchData.results;
+          const today = new Date().toISOString().split("T")[0];
+          const searchContext = `\n\n--- REAL-TIME WEB SEARCH RESULTS (Date: ${today}) ---\n` +
+            `Search Query: "${searchData.query}"\n` +
+            `Search Provider: ${searchData.provider}\n\n` +
+            searchData.results.map((r, i) => `[${i + 1}] "${r.title}"\nURL: ${r.url}\nSummary: ${r.content}`).join("\n\n") +
+            `\n\n--- CITATION RULES ---\n` +
+            `- Synthesize your response clearly and accurately using the real-time search results above.\n` +
+            `- Cite facts using bracket numbers like [1], [2], etc., immediately after each statement supported by that source.\n` +
+            `- Do not invent sources, citations, or facts outside of these search results.\n---`;
+
+          const sysIndex = messagesToSend.findIndex(m => m.role === "system");
+          if (sysIndex >= 0) {
+            messagesToSend[sysIndex] = {
+              ...messagesToSend[sysIndex],
+              content: messagesToSend[sysIndex].content + searchContext,
+            };
+          } else {
+            messagesToSend.unshift({ role: "system", content: searchContext });
+          }
+        }
+      }
+    }
+
+    let upstream = await requestGroq(groqKey, responseModel, messagesToSend, body.stream === true, maxTokens);
     let providerErrorText = "";
     if (!upstream.ok) {
       providerErrorText = await upstream.text();
@@ -154,7 +194,7 @@ export default async function handler(req) {
         if (fallbackQuota.error) return fallbackQuota.error;
         if (!fallbackQuota.quota.admin) reservation = { config, token: auth.token, modelKey: MODEL_ARTIFACT };
         responseModel = MODEL_ARTIFACT;
-        upstream = await requestGroq(groqKey, responseModel, body.messages, body.stream === true, maxTokens);
+        upstream = await requestGroq(groqKey, responseModel, messagesToSend, body.stream === true, maxTokens);
         providerErrorText = upstream.ok ? "" : await upstream.text();
       }
     }
@@ -167,10 +207,21 @@ export default async function handler(req) {
         headers: { "Content-Type": contentType.includes("application/json") ? contentType : "application/json", "Cache-Control": "no-store" },
       });
     }
+
+    const searchHeaders = searchSources.length > 0 ? {
+      "X-Manshverse-Sources": encodeURIComponent(JSON.stringify(searchSources)),
+      "Access-Control-Expose-Headers": "X-Manshverse-Model, X-Manshverse-Sources",
+    } : {};
+
     if (body.stream && upstream.body) {
       return new Response(upstream.body, {
         status: upstream.status,
-        headers: { "Content-Type": contentType, "Cache-Control": "no-store", "X-Manshverse-Model": responseModel },
+        headers: {
+          "Content-Type": contentType,
+          "Cache-Control": "no-store",
+          "X-Manshverse-Model": responseModel,
+          ...searchHeaders,
+        },
       });
     }
     const text = await upstream.text();
@@ -181,7 +232,12 @@ export default async function handler(req) {
     }
     return new Response(text, {
       status: upstream.status,
-      headers: { "Content-Type": contentType.includes("application/json") ? contentType : "application/json", "Cache-Control": "no-store", "X-Manshverse-Model": responseModel },
+      headers: {
+        "Content-Type": contentType.includes("application/json") ? contentType : "application/json",
+        "Cache-Control": "no-store",
+        "X-Manshverse-Model": responseModel,
+        ...searchHeaders,
+      },
     });
   } catch (error) {
     if (reservation) await releaseUsage(reservation.config, reservation.token, reservation.modelKey);

@@ -38,7 +38,39 @@ const PreBlock = ({ children, ...props }) => {
     <pre ref={ref} {...props}>{children}</pre>
   </div>;
 };
-const markdownComponents = { pre:PreBlock };
+
+const linkifyCitations = (text, sources = []) => {
+  if (!text || !Array.isArray(sources) || sources.length === 0) return text;
+  return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
+    const idx = parseInt(numStr, 10) - 1;
+    if (idx >= 0 && idx < sources.length && sources[idx]?.url) {
+      const s = sources[idx];
+      const safeTitle = (s.title || "").replace(/"/g, "&quot;");
+      return `[**${numStr}**](${s.url} "${safeTitle}")`;
+    }
+    return match;
+  });
+};
+
+const markdownComponents = {
+  pre: PreBlock,
+  a: ({ href, children, title, ...props }) => {
+    const textStr = String(typeof children === "string" ? children : (children?.props?.children || ""));
+    const isCitation = textStr.match(/^\d+$/);
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={isCitation ? "citation-badge" : "msg-link"}
+        title={title || href}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
+};
 
 const ChatMessageItem = memo(function ChatMessageItem({ msg, index, userName, userInitial, userAvatar, personaId, personaName, personaBackground, shadowMode, isCopied, isRemembered, onCopy, onRate, onRetry, onEdit, onRemember, onArtifact, onChoice }) {
   const [avatarFailed, setAvatarFailed] = useState(false);
@@ -48,6 +80,8 @@ const ChatMessageItem = memo(function ChatMessageItem({ msg, index, userName, us
   const { answer, questions } = parseArtifactQuestions(parsedAnswer);
   const isUser = msg.role === "user";
   const author = isUser ? userName : (personaName || msg.modelLabel);
+  const displayContent = linkifyCitations(fixLatex(answer || msg.content), msg.sources);
+
   return <div className="msg">
     <div className="msg-head">
       <div className={`msg-av ${isUser ? "user" : "assistant"}`} style={isUser
@@ -58,11 +92,58 @@ const ChatMessageItem = memo(function ChatMessageItem({ msg, index, userName, us
       <div className="msg-name" style={{ color:isUser ? "#888" : (personaName ? "#fff" : "var(--atm-accent)") }}>{author}</div>
       <time className="msg-time" dateTime={msg.createdAt || undefined}>{formatMessageTime(msg.createdAt)}</time>
       {msg.role === "assistant" && shadowMode && <span className="shadow-message-badge"><AppIcon name="eye" size={11}/> Shadow</span>}
+      {msg.sources && msg.sources.length > 0 && <span className="web-search-message-badge"><AppIcon name="globe" size={11}/> Web</span>}
     </div>
     <div className={`msg-body ${msg.role}`}>
-      {msg.streaming && !msg.content && <div className="stream-status" role="status" aria-live="polite"><span className="stream-dots"><i/><i/><i/></span><span>{msg.modelLabel === "Mansh Mode" ? "Choosing a model and thinking…" : `${msg.modelLabel || "Manshverse"} is thinking…`}</span></div>}
+      {msg.streaming && !msg.content && (
+        <div className="stream-status" role="status" aria-live="polite">
+          <span className="stream-dots"><i/><i/><i/></span>
+          <span>{msg.webSearching ? "Searching the web & synthesizing…" : msg.modelLabel === "Mansh Mode" ? "Choosing a model and thinking…" : `${msg.modelLabel || "Manshverse"} is thinking…`}</span>
+        </div>
+      )}
+      {msg.sources && msg.sources.length > 0 && (
+        <div className="msg-sources-container">
+          <div className="msg-sources-header">
+            <AppIcon name="globe" size={12}/>
+            <span>Sources ({msg.sources.length})</span>
+            {msg.sources[0]?.provider && (
+              <span className="msg-sources-provider">via {msg.sources[0].provider === "tavily" ? "Tavily" : "DuckDuckGo"}</span>
+            )}
+          </div>
+          <div className="msg-sources-grid">
+            {msg.sources.map((src, sIdx) => {
+              let domain = "";
+              try { domain = new URL(src.url).hostname.replace(/^www\./i, ""); }
+              catch { domain = "web"; }
+              return (
+                <a
+                  key={`${sIdx}-${src.url}`}
+                  href={src.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="msg-source-card"
+                  title={`${src.title || domain}\n${src.url}${src.content ? `\n\n${src.content}` : ""}`}
+                >
+                  <div className="msg-source-card-head">
+                    <img
+                      className="msg-source-favicon"
+                      src={`https://www.google.com/s2/favicons?sz=32&domain_url=${encodeURIComponent(src.url)}`}
+                      alt=""
+                      loading="lazy"
+                      onError={e => { e.currentTarget.style.display = "none"; }}
+                    />
+                    <span className="msg-source-domain">{domain}</span>
+                    <span className="msg-source-index">[{sIdx + 1}]</span>
+                  </div>
+                  <div className="msg-source-title">{src.title || domain}</div>
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {thinking && <div className="artifact-build-plan"><span><AppIcon name="sparkles" size={12}/> Build plan</span><ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{fixLatex(thinking)}</ReactMarkdown></div>}
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>{fixLatex(answer || msg.content)}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>{displayContent}</ReactMarkdown>
       {msg.failed && <div className="message-failure" role="status"><span>{msg.failureMessage || "This response did not finish."}</span><strong>Your partial answer is kept above. Retry to continue.</strong></div>}
       {questions.length > 0 && !msg.streaming && <section className="artifact-mcq" aria-label="Artifact setup questions"><strong>Quick choices</strong>{questions.map((item, questionIndex) => <div className="artifact-mcq-question" key={`${questionIndex}-${item.question}`}><span>{item.question}</span><div>{item.options.map((option, optionIndex) => <button type="button" className={mcqSelections[questionIndex] === option ? "selected" : ""} key={`${optionIndex}-${option}`} aria-pressed={mcqSelections[questionIndex] === option} onClick={() => setMcqSelections(previous => ({ ...previous, [questionIndex]:option }))}>{String.fromCharCode(65 + optionIndex)}. {option}</button>)}</div></div>)}<button type="button" className="artifact-mcq-continue" disabled={Object.keys(mcqSelections).length < questions.length} onClick={() => onChoice(questions.map((item, questionIndex) => ({ question:item.question, answer:mcqSelections[questionIndex] })))}>Continue with these choices <span aria-hidden="true">→</span></button></section>}
       {msg.streaming && <span className="msg-cursor"/>}
