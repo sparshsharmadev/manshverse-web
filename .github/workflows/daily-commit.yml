@@ -1,0 +1,30 @@
+name: Daily Activity Streak
+
+on:
+  schedule:
+    # Runs everyday at 04:00 UTC (09:30 AM IST)
+    - cron: '0 4 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  daily-commit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update activity timestamp
+        run: |
+          mkdir -p .github
+          echo "Last active: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > .github/activity.txt
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "sparshsharmadev"
+          git config --global user.email "sparshsharmadev@gmail.com"
+          git add .github/activity.txt
+          git commit -m "chore(activity): update daily streak [skip ci] $(date -u '+%Y-%m-%d')" || exit 0
+          git push origin main
